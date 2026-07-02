@@ -60,8 +60,11 @@ class FakeClock:
         return self.time
 
     async def sleep(self, seconds: float) -> None:
+        import asyncio
+
         self.sleeps.append(seconds)
         self.time += seconds
+        await asyncio.sleep(0)  # yield to the event loop (prevents tight loops)
 
 
 class RecordingEventSink:

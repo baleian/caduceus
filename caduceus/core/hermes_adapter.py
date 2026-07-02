@@ -21,7 +21,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from caduceus.core.errors import ConflictError, DockerError, HermesError, NotFoundError
+from caduceus.core.errors import (
+    CaduceusError,
+    ConflictError,
+    DockerError,
+    HermesError,
+    NotFoundError,
+)
 from caduceus.core.ports import CommandRunner, FileStore
 from caduceus.core.render import managed_config, merge_config_text, set_env_lines
 from caduceus.core.types import AgentSpec
@@ -232,6 +238,47 @@ class HermesAdapter:
                 detail=redact(removal.stderr),
             )
         return len(ids)
+
+    async def container_state(self, profile: str) -> str:
+        """State of this profile's container: running/exited/absent/unknown (E3)."""
+        try:
+            result = await self._runner.run(
+                [
+                    self._docker, "ps", "-a",
+                    "--filter", f"label=hermes-profile={profile}",
+                    "--format", "{{.State}}",
+                ],
+                timeout_s=DOCKER_TIMEOUT_S,
+            )
+        except CaduceusError:
+            return "unknown"
+        if not result.ok:
+            return "unknown"
+        states = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not states:
+            return "absent"
+        return "running" if "running" in states else "exited"
+
+    async def list_container_profiles(self) -> set[str]:
+        """Profiles that own hermes-labeled containers (orphan detection input)."""
+        try:
+            result = await self._runner.run(
+                [
+                    self._docker, "ps", "-a",
+                    "--filter", "label=hermes-agent=1",
+                    "--format", '{{.Label "hermes-profile"}}',
+                ],
+                timeout_s=DOCKER_TIMEOUT_S,
+            )
+        except CaduceusError:
+            return set()
+        if not result.ok:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    def list_profiles(self) -> list[str]:
+        """Existing hermes profile names (directory scan)."""
+        return self._files.list_subdirs(self._home / "profiles")
 
     # -- gateway process argv (consumed by GatewayProcessManager) ---------------
 

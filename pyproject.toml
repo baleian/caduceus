@@ -8,12 +8,15 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
     "ruamel.yaml>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
 ]
 
-# CLI/daemon entry points are added in U3 (CLI) / U2 (daemon):
-# [project.scripts]
+[project.scripts]
+caduceusd = "caduceus.daemon:main"
+# caduceus CLI entry point is added in U3:
 # caduceus = "caduceus.cli.main:main"
-# caduceusd = "caduceus.daemon:main"
 
 [dependency-groups]
 dev = [

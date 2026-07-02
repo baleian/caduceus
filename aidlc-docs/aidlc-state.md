@@ -49,8 +49,8 @@ Order: U1 → U2 → U3 → U4
 - [x] U1 NFR Requirements — APPROVED (uv/pydantic/ruamel/Hypothesis)
 - [x] U1 NFR Design — APPROVED (Infrastructure Design은 U1 스킵)
 - [x] U1 Code Generation — APPROVED & committed d5bec4c (105 tests)
-- [ ] U2 Daemon — Functional Design IN PROGRESS (awaiting answers in u2-daemon-functional-design-plan.md)
-- [ ] U3 CLI — pending
+- [x] U2 Daemon — APPROVED & committed (proxy/control/daemon.py, 347 tests, ruff/mypy strict)
+- [ ] U3 CLI — Functional Design in progress
 - [ ] U4 Web UI — pending
 - [ ] NFR Requirements — EXECUTE per-unit
 - [ ] NFR Design — EXECUTE per-unit
@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U1 Code Generation (approval gate presented)
-- **Next Stage**: U2 Daemon per-unit loop (Functional Design)
-- **Status**: U1 code generated & locally verified (105 tests, ruff/mypy strict)
+- **Current Stage**: U3 CLI — Functional Design
+- **Next Stage**: U3 NFR Requirements → NFR Design → Code Generation, then U4 Web UI
+- **Status**: U1+U2 code committed (347 tests). U3 Functional Design 생성 중
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

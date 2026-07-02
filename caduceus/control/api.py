@@ -1,0 +1,298 @@
+"""Admin REST/WS API (C5 contract; rules A5, B1–B4)."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
+
+from caduceus.control.agent_proxy import build_agent_proxy_router  # noqa: F401 (re-export)
+from caduceus.control.events import EventBus
+from caduceus.control.jobs import JobEngine
+from caduceus.control.lifecycle import LifecycleService
+from caduceus.control.provisioner import Provisioner
+from caduceus.core.config import CaduceusConfigStore
+from caduceus.core.errors import CaduceusError, ConflictError, NotFoundError
+from caduceus.core.hermes_adapter import HermesAdapter
+from caduceus.core.registry import Registry
+from caduceus.core.tokens import issue_token
+from caduceus.core.types import AgentSpec, CaduceusConfig, UpstreamConfig
+from caduceus.proxy.traffic import TrafficStats
+from caduceus.proxy.upstream import UpstreamClient
+
+logger = logging.getLogger(__name__)
+
+MAX_BODY_BYTES = 1024 * 1024  # B1
+
+
+class UpstreamUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str
+    api_key_env: str | None = None
+    default_model: str | None = None
+
+
+class SoulUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+
+class SkillToggle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class ToolsetsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    toolsets: list[str]
+
+
+def _error_response(exc: CaduceusError) -> JSONResponse:
+    status = 500
+    if isinstance(exc, NotFoundError):
+        status = 404
+    elif isinstance(exc, ConflictError):
+        status = 409
+    return JSONResponse(status_code=status, content={"error": str(exc.message)})
+
+
+def _public_record(registry: Registry, name: str) -> dict[str, Any]:
+    record = registry.get(name)
+    data = record.model_dump()
+    data.pop("api_server_key", None)  # S3: server-side only
+    data.pop("token_hash", None)
+    return data
+
+
+def build_admin_router(
+    *,
+    registry: Registry,
+    provisioner: Provisioner,
+    lifecycle: LifecycleService,
+    jobs: JobEngine,
+    hermes: HermesAdapter,
+    events: EventBus,
+    traffic: TrafficStats,
+    upstream: UpstreamClient,
+    config_store: CaduceusConfigStore,
+    config: CaduceusConfig,
+    invalidate_tokens: Any,
+    ws_auth: Any,  # Callable[[str], bool] — WS token check (middleware skips WS)
+) -> APIRouter:
+    router = APIRouter()
+
+    # -- agents ---------------------------------------------------------------
+
+    @router.get("/api/agents")
+    async def list_agents(probe: bool = Query(default=False)) -> list[dict[str, Any]]:
+        statuses = await lifecycle.status(probe_container=probe)
+        return [s.model_dump() for s in statuses]
+
+    @router.post("/api/agents", status_code=202)
+    async def create_agent(spec: AgentSpec) -> dict[str, str]:
+        job = provisioner.create_agent(spec)
+        return {"job_id": job.id}
+
+    @router.get("/api/agents/{name}")
+    async def get_agent(name: str, probe: bool = Query(default=False)) -> dict[str, Any]:
+        try:
+            record = _public_record(registry, name)
+            status = (await lifecycle.status(name, probe_container=probe))[0]
+        except CaduceusError as exc:
+            raise_http(exc)
+        return {"record": record, "status": status.model_dump()}
+
+    @router.delete("/api/agents/{name}", status_code=202)
+    async def remove_agent(
+        name: str, x_confirm: str | None = Header(default=None)
+    ) -> Any:
+        if x_confirm != name:  # A5: destructive op needs explicit confirmation
+            return JSONResponse(
+                status_code=400,
+                content={"error": "destructive operation requires X-Confirm: <agent-name>"},
+            )
+        try:
+            job = provisioner.remove_agent(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"job_id": job.id}
+
+    @router.post("/api/agents/{name}/start", status_code=202)
+    async def start_agent(name: str) -> Any:
+        try:
+            await lifecycle.start(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"ok": True}
+
+    @router.post("/api/agents/{name}/stop", status_code=202)
+    async def stop_agent(name: str) -> Any:
+        try:
+            await lifecycle.stop(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"ok": True}
+
+    @router.get("/api/agents/{name}/logs")
+    async def agent_logs(name: str, last: int = Query(default=200, ge=1, le=2000)) -> Any:
+        try:
+            return {"lines": lifecycle.logs(name, last=last)}
+        except CaduceusError as exc:
+            return _error_response(exc)
+
+    @router.post("/api/agents/{name}/token/rotate", status_code=204, response_model=None)
+    async def rotate_token(name: str) -> Any:
+        try:
+            record = registry.get(name)
+            issued = issue_token(name)
+            hermes.write_gateway_token(record.profile_name, issued.plaintext)
+            registry.rotate_token_hash(name, issued.token_hash)
+            invalidate_tokens()
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None  # 204: plaintext lives only in the profile .env (S1)
+
+    # -- persona / skills / toolsets (F7) ---------------------------------------
+
+    @router.get("/api/agents/{name}/soul")
+    async def get_soul(name: str) -> Any:
+        try:
+            record = registry.get(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"content": hermes.read_soul(record.profile_name)}
+
+    @router.put("/api/agents/{name}/soul", status_code=204, response_model=None)
+    async def put_soul(name: str, body: SoulUpdate) -> Any:
+        try:
+            record = registry.get(name)
+            hermes.write_soul(record.profile_name, body.content)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None
+
+    @router.get("/api/agents/{name}/skills")
+    async def get_skills(name: str) -> Any:
+        try:
+            record = registry.get(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {
+            "skills": [
+                {"name": s.name, "enabled": s.enabled}
+                for s in hermes.list_skills(record.profile_name)
+            ]
+        }
+
+    @router.put("/api/agents/{name}/skills/{skill}", status_code=204, response_model=None)
+    async def toggle_skill(name: str, skill: str, body: SkillToggle) -> Any:
+        try:
+            record = registry.get(name)
+            hermes.set_skill_enabled(record.profile_name, skill, body.enabled)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None
+
+    @router.get("/api/agents/{name}/toolsets")
+    async def get_toolsets(name: str) -> Any:
+        try:
+            record = registry.get(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"toolsets": hermes.get_toolsets(record.profile_name)}
+
+    @router.put("/api/agents/{name}/toolsets", status_code=204, response_model=None)
+    async def put_toolsets(name: str, body: ToolsetsUpdate) -> Any:
+        try:
+            record = registry.get(name)
+            hermes.set_toolsets(record.profile_name, body.toolsets)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None
+
+    # -- gateway ----------------------------------------------------------------
+
+    @router.get("/api/gateway")
+    async def gateway_info() -> dict[str, Any]:
+        return {
+            "listen": config.listen.model_dump(),
+            "upstream": {
+                "base_url": upstream.config.base_url,
+                "default_model": upstream.config.default_model,
+                "api_key_env": upstream.config.api_key_env,  # env NAME only (S4)
+            },
+            "traffic": traffic.summary(),
+        }
+
+    @router.put("/api/gateway/upstream")
+    async def put_upstream(body: UpstreamUpdate) -> Any:
+        try:
+            new_upstream = UpstreamConfig(**body.model_dump())
+            new_config = config.model_copy(update={"upstream": new_upstream})
+            config_store.save(new_config)
+            upstream.swap(new_upstream)  # atomic (S4)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"base_url": new_upstream.base_url}
+
+    # -- jobs / status / events ---------------------------------------------------
+
+    @router.get("/api/jobs")
+    async def list_jobs() -> list[dict[str, Any]]:
+        return [j.snapshot() for j in jobs.list()]
+
+    @router.get("/api/jobs/{job_id}")
+    async def get_job(job_id: str) -> Any:
+        try:
+            return jobs.get(job_id).snapshot()
+        except CaduceusError as exc:
+            return _error_response(exc)
+
+    @router.get("/api/status")
+    async def deep_status() -> dict[str, Any]:  # RESILIENCY-06 deep health
+        statuses = await lifecycle.status(probe_container=False)
+        return {
+            "agents": {s.name: s.detail["summary"] for s in statuses},
+            "traffic": traffic.summary()["totals"],
+            "upstream": upstream.config.base_url,
+        }
+
+    @router.websocket("/api/events")
+    async def events_ws(websocket: WebSocket) -> None:
+        # NOTE: auth for WS is enforced here (HTTP middleware does not cover WS).
+        token = websocket.query_params.get("token") or websocket.headers.get(
+            "x-caduceus-token", ""
+        )
+        if not ws_auth(token):
+            await websocket.close(code=4401)
+            return
+        await websocket.accept()
+        queue = events.subscribe()
+        try:
+            for past in events.replay():
+                await websocket.send_text(past.model_dump_json())
+            while True:
+                event = await queue.get()
+                await websocket.send_text(event.model_dump_json())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            events.unsubscribe(queue)
+
+    return router
+
+
+def raise_http(exc: CaduceusError) -> None:
+    from fastapi import HTTPException
+
+    status = 404 if isinstance(exc, NotFoundError) else (
+        409 if isinstance(exc, ConflictError) else 500
+    )
+    raise HTTPException(status_code=status, detail=str(exc.message))
