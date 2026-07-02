@@ -28,6 +28,11 @@ Caduceus = **단일 데몬(`caduceusd`) + CLI(`caduceus`) + SPA(Web UI)**.
 | **AD-6** | **per-agent 토큰 = profile `.env`** | 생성 시 발급, `OPENAI_API_KEY=cad-<agent>-<random>`로 주입 (hermes secret scope가 프로필별 격리). caduceusd는 해시만 저장. 회전 지원 |
 | AD-7 (D-c) | 풋프린트 전술 유예 | N6은 부차적 — 컨테이너 리소스 제한(설정)과 toolset 축소(설정)만 1차 제공. 유휴 회수 등은 Operations 이후 검토 |
 
+## 2.1 Amendments (Construction 단계 확정 사항)
+
+- **AMD-1 (2026-07-02, U1 Functional Design)**: AD-5의 감독 모델 변경 — 사용자 확인에 따라 **부팅 지속·OS 서비스 통합(systemd/launchd) 불채택**. C7은 Service Manager Adapter에서 **GatewayProcessManager**(데몬의 자식 프로세스 spawn/monitor/backoff-restart/graceful-stop)로 재정의. gateway 수명 ⊆ caduceusd 수명. 근거: 재부팅 자동 재개 불필요 확인, 플랫폼 분기 제거(N9 단순화), 감독은 부모 프로세스가 수행 (audit 2026-07-02T21:40Z 참조)
+- **AMD-2 (동일)**: 워크스페이스 위치 = `~/.caduceus/workspaces/<agent>/` (profile 밖, Caduceus 관리) → 컨테이너 `/workspace` bind mount. rm 시 워크스페이스만 보존하는 FD4 의미론 지원 (§4 데이터 소유권 표의 "에이전트 실행 환경" 중 workspace 부분이 이 경로로 이동)
+
 ## 3. P2 기록 — 커스텀 도입 사유 (hermes 네이티브 대안 소진 확인)
 
 | 커스텀 요소 | 네이티브 대안 검토 결과 |

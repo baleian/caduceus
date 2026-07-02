@@ -45,7 +45,8 @@
 Order: U1 → U2 → U3 → U4
 
 ### 🟢 CONSTRUCTION PHASE (per-unit loop)
-- [ ] Functional Design — EXECUTE per-unit
+- [x] U1 Functional Design — complete (FD1~FD4, AMD-1/2; awaiting approval)
+- [ ] Functional Design — U2/U3/U4 pending
 - [ ] NFR Requirements — EXECUTE per-unit
 - [ ] NFR Design — EXECUTE per-unit
 - [ ] Infrastructure Design — CONDITIONAL per-unit
