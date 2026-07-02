@@ -48,8 +48,8 @@ Order: U1 → U2 → U3 → U4
 - [x] U1 Functional Design — APPROVED (FD1~FD4, AMD-1/2)
 - [x] U1 NFR Requirements — APPROVED (uv/pydantic/ruamel/Hypothesis)
 - [x] U1 NFR Design — APPROVED (Infrastructure Design은 U1 스킵)
-- [x] U1 Code Generation — complete (105 tests, ruff/mypy strict 통과; awaiting approval)
-- [ ] U2 Daemon — per-unit loop pending
+- [x] U1 Code Generation — APPROVED & committed d5bec4c (105 tests)
+- [ ] U2 Daemon — Functional Design IN PROGRESS (awaiting answers in u2-daemon-functional-design-plan.md)
 - [ ] U3 CLI — pending
 - [ ] U4 Web UI — pending
 - [ ] NFR Requirements — EXECUTE per-unit
