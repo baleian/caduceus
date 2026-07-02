@@ -45,8 +45,13 @@
 Order: U1 → U2 → U3 → U4
 
 ### 🟢 CONSTRUCTION PHASE (per-unit loop)
-- [x] U1 Functional Design — complete (FD1~FD4, AMD-1/2; awaiting approval)
-- [ ] Functional Design — U2/U3/U4 pending
+- [x] U1 Functional Design — APPROVED (FD1~FD4, AMD-1/2)
+- [x] U1 NFR Requirements — APPROVED (uv/pydantic/ruamel/Hypothesis)
+- [x] U1 NFR Design — APPROVED (Infrastructure Design은 U1 스킵)
+- [x] U1 Code Generation — complete (105 tests, ruff/mypy strict 통과; awaiting approval)
+- [ ] U2 Daemon — per-unit loop pending
+- [ ] U3 CLI — pending
+- [ ] U4 Web UI — pending
 - [ ] NFR Requirements — EXECUTE per-unit
 - [ ] NFR Design — EXECUTE per-unit
 - [ ] Infrastructure Design — CONDITIONAL per-unit
@@ -58,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U1 Core Foundation — Functional Design (starting)
-- **Next Stage**: U1 NFR Requirements
-- **Status**: INCEPTION complete & committed; per-unit loop begun (U1 → U2 → U3 → U4)
+- **Current Stage**: U1 Code Generation (approval gate presented)
+- **Next Stage**: U2 Daemon per-unit loop (Functional Design)
+- **Status**: U1 code generated & locally verified (105 tests, ruff/mypy strict)
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

@@ -1,0 +1,61 @@
+[project]
+name = "caduceus"
+version = "0.1.0"
+description = "Local-first control layer + gateway for orchestrating sandboxed hermes agents"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "ruamel.yaml>=0.18",
+]
+
+# CLI/daemon entry points are added in U3 (CLI) / U2 (daemon):
+# [project.scripts]
+# caduceus = "caduceus.cli.main:main"
+# caduceusd = "caduceus.daemon:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.100",
+    "mypy>=1.10",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["caduceus"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "S603", # subprocess without shell=True is exactly what we want (argv arrays)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S108"] # asserts and tmp paths are fine in tests
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+packages = ["caduceus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires real hermes/docker on the host (deselect with '-m \"not integration\"')",
+]
+addopts = "-m 'not integration'"
+
+[tool.hypothesis]
+# Seed and statistics are printed on failure for reproducibility (PBT-08).
