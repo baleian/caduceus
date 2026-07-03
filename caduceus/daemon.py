@@ -229,6 +229,8 @@ def build_daemon(
             config=holder,
             invalidate_tokens=invalidate_tokens,
             ws_auth=auth.verify,
+            alerts_snapshot=reconciler.alerts_snapshot,
+            clock=clock,
         )
     )
     app.include_router(build_agent_proxy_router(registry, agent_client))

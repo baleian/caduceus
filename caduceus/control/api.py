@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
@@ -17,9 +18,10 @@ from caduceus.control.provisioner import Provisioner
 from caduceus.core.config import CaduceusConfigStore, ConfigHolder
 from caduceus.core.errors import CaduceusError, ConflictError, NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
+from caduceus.core.ports import Clock
 from caduceus.core.registry import Registry
 from caduceus.core.tokens import issue_token
-from caduceus.core.types import AgentSpec, ApprovalsMode, UpstreamConfig
+from caduceus.core.types import AgentSpec, ApprovalsMode, CoreEvent, UpstreamConfig
 from caduceus.proxy.traffic import TrafficStats
 from caduceus.proxy.upstream import UpstreamClient
 
@@ -94,6 +96,8 @@ def build_admin_router(
     config: ConfigHolder,
     invalidate_tokens: Any,
     ws_auth: Any,  # Callable[[str], bool] — WS token check (middleware skips WS)
+    alerts_snapshot: Callable[[], dict[str, Any]],
+    clock: Clock,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -303,6 +307,11 @@ def build_admin_router(
             "upstream": upstream.config.base_url,
         }
 
+    @router.get("/api/alerts")
+    async def active_alerts() -> dict[str, Any]:
+        """Drift/orphan conditions active as of the last reconcile cycle."""
+        return alerts_snapshot()
+
     @router.websocket("/api/events")
     async def events_ws(websocket: WebSocket) -> None:
         # NOTE: auth for WS is enforced here (HTTP middleware does not cover WS).
@@ -317,6 +326,10 @@ def build_admin_router(
         try:
             for past in events.replay():
                 await websocket.send_text(past.model_dump_json())
+            # Replay/live boundary: clients must not treat replayed events as
+            # "just happened" (no toasts before this marker).
+            synced = CoreEvent(kind="events.synced", agent=None, data={}, ts=clock.now_iso())
+            await websocket.send_text(synced.model_dump_json())
             while True:
                 event = await queue.get()
                 await websocket.send_text(event.model_dump_json())

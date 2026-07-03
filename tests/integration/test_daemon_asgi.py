@@ -221,8 +221,26 @@ def test_events_websocket_replays_history() -> None:
 
         token = files.read_text(CADUCEUS_HOME / "admin.token").strip()
         with client.websocket_connect(f"/api/events?token={token}") as ws:
-            first = ws.receive_json()
-            assert first["kind"].startswith("job.")  # replayed history
+            # replay first, then exactly one events.synced marker (alert-ux FR-2)
+            kinds: list[str] = []
+            for _ in range(600):
+                frame = ws.receive_json()
+                kinds.append(frame["kind"])
+                if frame["kind"] == "events.synced":
+                    break
+            assert kinds[-1] == "events.synced"
+            assert "events.synced" not in kinds[:-1]
+            assert any(k.startswith("job.") for k in kinds[:-1])  # replayed history
+
+            # live events keep flowing after the marker
+            created = client.post("/api/agents", json={"name": "beta"}, headers=headers)
+            assert created.status_code == 202
+            for _ in range(600):
+                frame = ws.receive_json()
+                if frame["kind"].startswith("job.") and frame.get("agent") == "beta":
+                    break
+            else:
+                raise AssertionError("no live event received after events.synced")
 
         # bad token → 4401 close (auth enforced on WS too)
         import pytest as _pytest
@@ -231,6 +249,29 @@ def test_events_websocket_replays_history() -> None:
             "/api/events?token=wrong"
         ) as ws:
             ws.receive_json()
+
+
+def test_active_alerts_endpoint_reports_current_orphans() -> None:
+    daemon, files = make_daemon()
+    app = attach_lifespan(daemon)
+    with TestClient(app) as client:
+        headers = admin_headers(files)
+        assert client.get("/api/alerts").status_code == 401  # protected surface
+
+        snapshot = client.get("/api/alerts", headers=headers).json()
+        assert snapshot["alerts"] == []  # nothing to report
+
+        files.mkdir(HERMES_HOME / "profiles" / "cad-ghost")  # orphan appears
+        for _ in range(200):
+            snapshot = client.get("/api/alerts", headers=headers).json()
+            if snapshot["alerts"]:
+                break
+            time.sleep(0.01)
+        alerts = {a["key"]: a for a in snapshot["alerts"]}
+        assert "orphan:profile:cad-ghost" in alerts
+        assert alerts["orphan:profile:cad-ghost"]["kind"] == "orphan"
+        assert alerts["orphan:profile:cad-ghost"]["since"]
+        assert snapshot["checked_at"] is not None
 
 
 def test_soul_and_toolsets_editing_through_api() -> None:

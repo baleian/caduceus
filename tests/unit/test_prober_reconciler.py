@@ -67,7 +67,9 @@ class TestProber:
         assert prober.health_of("coder") == "unknown"
 
 
-def make_reconciler(h: Harness, sink: RecordingEventSink) -> Reconciler:
+def make_reconciler(
+    h: Harness, sink: RecordingEventSink, clock: FakeClock | None = None
+) -> Reconciler:
     async def run_stop(record) -> None:  # type: ignore[no-untyped-def]
         return None
 
@@ -77,8 +79,20 @@ def make_reconciler(h: Harness, sink: RecordingEventSink) -> Reconciler:
     )
     return Reconciler(
         h.registry, h.manager, h.hermes, lifecycle,  # type: ignore[arg-type]
-        h.config, FakeClock(), sink, interval_s=30,
+        h.config, clock or FakeClock(), sink, interval_s=30,
     )
+
+
+class TickingClock(FakeClock):
+    """now_iso() distinct per call — for `since` preservation assertions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticks = 0
+
+    def now_iso(self) -> str:
+        self.ticks += 1
+        return f"2026-07-02T00:00:{self.ticks:02d}Z"
 
 
 class TestReconciler:
@@ -143,6 +157,61 @@ class TestReconciler:
         assert ("container", "cad-zombie") in orphans
         assert not any(name == "personal" for _, name in orphans)
         assert not any(name == "cad-coder" for _, name in orphans)
+
+
+class TestAlertsSnapshot:
+    """alert-ux FR-1: active conditions from the last completed cycle."""
+
+    async def test_empty_before_first_cycle(self) -> None:
+        h = await provisioned_harness()
+        reconciler = make_reconciler(h, RecordingEventSink())
+        assert reconciler.alerts_snapshot() == {"alerts": [], "checked_at": None}
+
+    async def test_remediated_dead_gateway_is_not_active(self) -> None:
+        h = await provisioned_harness()
+        reconciler = make_reconciler(h, RecordingEventSink())
+        await h.manager.stop("coder")
+
+        await reconciler.reconcile_once()  # restart succeeds → remediated
+        snapshot = reconciler.alerts_snapshot()
+        assert snapshot["alerts"] == []
+        assert snapshot["checked_at"] is not None
+
+    async def test_suppressed_restart_active_until_recovery(self) -> None:
+        h = await provisioned_harness()
+        reconciler = make_reconciler(h, RecordingEventSink())
+        await h.manager.stop("coder")
+        reconciler._restart_attempted.add("coder")  # R5: as if already attempted
+
+        await reconciler.reconcile_once()
+        keys = [a["key"] for a in reconciler.alerts_snapshot()["alerts"]]
+        assert keys == ["drift:coder:gateway-not-running"]
+
+        reconciler._restart_attempted.discard("coder")
+        await reconciler.reconcile_once()  # restart allowed again → remediated
+        assert reconciler.alerts_snapshot()["alerts"] == []
+
+    async def test_config_drift_active_then_cleared_with_since_preserved(self) -> None:
+        h = await provisioned_harness()
+        reconciler = make_reconciler(h, RecordingEventSink(), clock=TickingClock())
+        path = HERMES_HOME / "profiles" / "cad-coder" / "config.yaml"
+        original = h.files.read_text(path)
+        h.files.write_text_atomic(
+            path, original.replace("provider: custom", "provider: auto")
+        )
+
+        await reconciler.reconcile_once()
+        alerts = reconciler.alerts_snapshot()["alerts"]
+        assert [a["key"] for a in alerts] == ["drift:coder:managed-config-drift"]
+        assert "model.provider" in alerts[0]["keys"]
+        first_since = alerts[0]["since"]
+
+        await reconciler.reconcile_once()  # still drifted → since preserved
+        assert reconciler.alerts_snapshot()["alerts"][0]["since"] == first_since
+
+        h.files.write_text_atomic(path, original)  # user fixes the config
+        await reconciler.reconcile_once()
+        assert reconciler.alerts_snapshot()["alerts"] == []
 
 
 async def test_prober_and_reconciler_loops_survive_probe_exceptions() -> None:

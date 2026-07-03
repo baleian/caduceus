@@ -14,8 +14,16 @@ import {
 
 import type { ApiClient } from '../api/client'
 import { startEventStream, type ConnectionStatus, type SocketLike } from '../api/ws'
-import { clearAgentsStale, initialLiveState, reduceEvent, type LiveState } from '../lib/reducer'
-import type { AgentStatus, CoreEvent } from '../lib/types'
+import {
+  activeAlertFromEvent,
+  alertLabel,
+  clearAgentsStale,
+  conditionKey,
+  initialLiveState,
+  reduceEvent,
+  type LiveState,
+} from '../lib/reducer'
+import type { ActiveAlert, AgentStatus, AlertsSnapshot, CoreEvent } from '../lib/types'
 
 export interface Toast {
   id: number
@@ -28,6 +36,11 @@ export interface ShellState {
   live: LiveState
   connection: ConnectionStatus
   toasts: Toast[]
+  /** true once this WS session's replay finished (events.synced) — replayed
+   * events must never toast, they are history, not "just happened" */
+  synced: boolean
+  /** conditions active right now (REST snapshot ∪ post-sync live detections) */
+  activeAlerts: Record<string, ActiveAlert>
 }
 
 export type ShellAction =
@@ -35,6 +48,7 @@ export type ShellAction =
   | { type: 'agents'; list: AgentStatus[] }
   | { type: 'connection'; status: ConnectionStatus }
   | { type: 'stale-cleared' }
+  | { type: 'alerts-snapshot'; snapshot: AlertsSnapshot }
   | { type: 'toast'; toast: Toast }
   | { type: 'toast-dismiss'; id: number }
 
@@ -43,6 +57,8 @@ export const initialShellState: ShellState = {
   live: initialLiveState,
   connection: 'reconnecting',
   toasts: [],
+  synced: false,
+  activeAlerts: {},
 }
 
 const TOAST_LIMIT = 5
@@ -51,24 +67,68 @@ const TOAST_LIMIT = 5
 export function shellReducer(state: ShellState, action: ShellAction): ShellState {
   switch (action.type) {
     case 'ws-event': {
-      const live = reduceEvent(state.live, action.event)
-      if (live === state.live) return state
-      const toasts =
-        action.event.kind.startsWith('drift.') || action.event.kind === 'orphan.detected'
-          ? boundedToasts(state.toasts, {
-              id: nextToastId(state.toasts),
-              tone: 'warn' as const,
-              text: `${action.event.kind}${action.event.agent ? ` — ${action.event.agent}` : ''}`,
-            })
-          : state.toasts
-      return { ...state, live, toasts }
+      const event = action.event
+      if (event.kind === 'events.synced') {
+        return state.synced ? state : { ...state, synced: true }
+      }
+      const live = reduceEvent(state.live, event)
+      let toasts = state.toasts
+      let activeAlerts = state.activeAlerts
+      const key = state.synced ? conditionKey(event) : null // replay never toasts
+      if (key && (event.kind === 'drift.detected' || event.kind === 'orphan.detected')) {
+        if (!(key in activeAlerts)) {
+          // a condition that just appeared — toast once, then stay silent while
+          // the reconciler re-detects it every cycle
+          const alert = activeAlertFromEvent(event, key)
+          activeAlerts = { ...activeAlerts, [key]: alert }
+          toasts = boundedToasts(toasts, {
+            id: nextToastId(toasts),
+            tone: 'warn',
+            text: alertLabel(alert),
+          })
+        }
+      } else if (key && event.kind === 'drift.remediated') {
+        if (key in activeAlerts) {
+          activeAlerts = { ...activeAlerts }
+          delete activeAlerts[key]
+        }
+        toasts = boundedToasts(toasts, {
+          id: nextToastId(toasts),
+          tone: 'info',
+          text: `drift remediated — ${event.agent ?? ''}`,
+        })
+      }
+      if (live === state.live && toasts === state.toasts && activeAlerts === state.activeAlerts) {
+        return state
+      }
+      return { ...state, live, toasts, activeAlerts }
     }
     case 'agents':
       return { ...state, agents: action.list }
     case 'connection':
-      return state.connection === action.status ? state : { ...state, connection: action.status }
+      // any transition invalidates the replay/live boundary of the old socket
+      return state.connection === action.status
+        ? state
+        : { ...state, connection: action.status, synced: false }
     case 'stale-cleared':
       return { ...state, live: clearAgentsStale(state.live) }
+    case 'alerts-snapshot': {
+      // authoritative "active right now" set — replaces the map; only
+      // conditions we did not already know about toast (first load: all)
+      const activeAlerts: Record<string, ActiveAlert> = {}
+      let toasts = state.toasts
+      for (const alert of action.snapshot.alerts) {
+        activeAlerts[alert.key] = alert
+        if (!(alert.key in state.activeAlerts)) {
+          toasts = boundedToasts(toasts, {
+            id: nextToastId(toasts),
+            tone: 'warn',
+            text: alertLabel(alert),
+          })
+        }
+      }
+      return { ...state, activeAlerts, toasts }
+    }
     case 'toast':
       return { ...state, toasts: boundedToasts(state.toasts, action.toast) }
     case 'toast-dismiss':
@@ -84,6 +144,10 @@ function boundedToasts(toasts: readonly Toast[], toast: Toast): Toast[] {
   const next = [...toasts, toast]
   return next.length > TOAST_LIMIT ? next.slice(next.length - TOAST_LIMIT) : next
 }
+
+/** Resolution poll cadence — matches the daemon's default reconcile interval. */
+export const ALERTS_POLL_MS = 30_000
+const ALERTS_REFETCH_DEBOUNCE_MS = 500
 
 export interface AppStore {
   client: ApiClient
@@ -121,6 +185,32 @@ export function AppProvider(props: {
     }
   }, [client])
 
+  const refetchAlerts = useCallback(async () => {
+    try {
+      const snapshot = await client.getAlerts()
+      dispatch({ type: 'alerts-snapshot', snapshot })
+    } catch {
+      // keep the last successful snapshot (U4-REL); badge covers reachability
+    }
+  }, [client])
+
+  // drift/orphan live events also refresh the snapshot (debounced) so
+  // remediation/resolution converges faster than the poll below
+  const alertsRefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleAlertsRefetch = useCallback(() => {
+    if (alertsRefetchTimer.current) return
+    alertsRefetchTimer.current = setTimeout(() => {
+      alertsRefetchTimer.current = null
+      void refetchAlerts()
+    }, ALERTS_REFETCH_DEBOUNCE_MS)
+  }, [refetchAlerts])
+  useEffect(
+    () => () => {
+      if (alertsRefetchTimer.current) clearTimeout(alertsRefetchTimer.current)
+    },
+    [],
+  )
+
   const toast = useCallback((tone: Toast['tone'], text: string) => {
     toastSeq.current += 1
     dispatch({ type: 'toast', toast: { id: toastSeq.current, tone, text } })
@@ -136,15 +226,21 @@ export function AppProvider(props: {
     const handle = startEventStream({
       url: () =>
         `${wsProto}://${window.location.host}/api/events?token=${encodeURIComponent(token)}`,
-      onEvent: (event) => dispatch({ type: 'ws-event', event }),
+      onEvent: (event) => {
+        dispatch({ type: 'ws-event', event })
+        if (event.kind.startsWith('drift.') || event.kind === 'orphan.detected') {
+          scheduleAlertsRefetch()
+        }
+      },
       onStatus: (status) => dispatch({ type: 'connection', status }),
       onConnected: () => {
         void refetchAgents()
+        void refetchAlerts() // FR-3: what is REALLY broken right now
       },
       socketFactory,
     })
     return () => handle.stop()
-  }, [token, refetchAgents, socketFactory])
+  }, [token, refetchAgents, refetchAlerts, scheduleAlertsRefetch, socketFactory])
 
   // structural job finished → the agent list is stale (reducer contract)
   useEffect(() => {
@@ -153,6 +249,17 @@ export function AppProvider(props: {
       void refetchAgents()
     }
   }, [state.live.agentsStale, refetchAgents])
+
+  // Q4=A: while anything is active, poll at the reconcile cadence so resolved
+  // conditions disappear without a refresh; zero polling when all is quiet
+  const hasActiveAlerts = Object.keys(state.activeAlerts).length > 0
+  useEffect(() => {
+    if (!hasActiveAlerts) return
+    const id = setInterval(() => {
+      void refetchAlerts()
+    }, ALERTS_POLL_MS)
+    return () => clearInterval(id)
+  }, [hasActiveAlerts, refetchAlerts])
 
   const store = useMemo<AppStore>(
     () => ({ client, state, refetchAgents, toast, dismissToast }),

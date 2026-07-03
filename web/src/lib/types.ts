@@ -41,6 +41,24 @@ export interface CoreEvent {
   ts: string
 }
 
+/** GET /api/alerts item — a drift/orphan condition active right now.
+ * key: "drift:{agent}:{reason}" | "orphan:{resource}:{name}" (daemon-shared). */
+export interface ActiveAlert {
+  key: string
+  kind: 'drift' | 'orphan'
+  since: string
+  agent?: string
+  reason?: string
+  keys?: string[]
+  resource?: string
+  name?: string
+}
+
+export interface AlertsSnapshot {
+  alerts: ActiveAlert[]
+  checked_at: string | null
+}
+
 /** GET /api/jobs[/{id}] — Job.snapshot() */
 export interface JobSnapshot {
   id: string

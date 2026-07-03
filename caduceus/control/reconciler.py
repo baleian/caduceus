@@ -46,6 +46,11 @@ class Reconciler:
         self._interval = interval_s
         self._restart_attempted: set[str] = set()  # R5: once per drift occurrence
         self._task: asyncio.Task[None] | None = None
+        # Active conditions from the last COMPLETED cycle, keyed by
+        # "drift:{agent}:{reason}" / "orphan:{resource}:{name}". A failed cycle
+        # keeps the previous snapshot (assigned only at the end of a full pass).
+        self._active: dict[str, dict[str, Any]] = {}
+        self._checked_at: str | None = None
 
     def start(self) -> None:
         if self._task is None:
@@ -59,11 +64,21 @@ class Reconciler:
             self._task = None
 
     async def reconcile_once(self) -> None:
-        await self._dead_gateways()
-        self._config_drift()
-        await self._orphans()
+        active: dict[str, dict[str, Any]] = {}
+        await self._dead_gateways(active)
+        self._config_drift(active)
+        await self._orphans(active)
+        self._active = active
+        self._checked_at = self._clock.now_iso()
 
-    async def _dead_gateways(self) -> None:
+    def alerts_snapshot(self) -> dict[str, Any]:
+        """Active conditions as of the last completed cycle (`checked_at`)."""
+        return {
+            "alerts": [dict(payload) for payload in self._active.values()],
+            "checked_at": self._checked_at,
+        }
+
+    async def _dead_gateways(self, active: dict[str, dict[str, Any]]) -> None:
         for record in self._registry.list():
             agent = record.spec.name
             if record.desired_state != "running":
@@ -77,15 +92,18 @@ class Reconciler:
                 continue
             self._emit("drift.detected", agent, reason="gateway-not-running")
             if agent in self._restart_attempted:
-                continue  # R5: no restart loops from the reconciler
+                # R5: no restart loops from the reconciler
+                self._activate(active, "drift", agent=agent, reason="gateway-not-running")
+                continue
             self._restart_attempted.add(agent)
             try:
                 await self._lifecycle.start(agent)
                 self._emit("drift.remediated", agent, action="gateway-restarted")
             except Exception as exc:  # noqa: BLE001 - report, never crash the loop
                 logger.warning("reconcile restart failed for %s: %s", agent, type(exc).__name__)
+                self._activate(active, "drift", agent=agent, reason="gateway-not-running")
 
-    def _config_drift(self) -> None:
+    def _config_drift(self, active: dict[str, dict[str, Any]]) -> None:
         for record in self._registry.list():
             expected = managed_config(
                 record.spec,
@@ -99,21 +117,28 @@ class Reconciler:
                 continue
             drift = diff_managed(current, expected)
             if drift:
+                keys = [key for key, _, _ in drift]
                 self._emit(
                     "drift.detected",
                     record.spec.name,
                     reason="managed-config-drift",
-                    keys=[key for key, _, _ in drift],
+                    keys=keys,
+                )
+                self._activate(
+                    active, "drift",
+                    agent=record.spec.name, reason="managed-config-drift", keys=keys,
                 )
 
-    async def _orphans(self) -> None:
+    async def _orphans(self, active: dict[str, dict[str, Any]]) -> None:
         known_profiles = {r.profile_name for r in self._registry.list()}
         for profile in self._hermes.list_profiles():
             if profile.startswith(PROFILE_PREFIX) and profile not in known_profiles:
                 self._emit("orphan.detected", None, resource="profile", name=profile)
+                self._activate(active, "orphan", resource="profile", name=profile)
         for profile in await self._hermes.list_container_profiles():
             if profile.startswith(PROFILE_PREFIX) and profile not in known_profiles:
                 self._emit("orphan.detected", None, resource="container", name=profile)
+                self._activate(active, "orphan", resource="container", name=profile)
 
     async def _loop(self) -> None:
         while True:
@@ -122,6 +147,15 @@ class Reconciler:
             except Exception:  # noqa: BLE001 - reconciler must never die
                 logger.exception("reconcile cycle failed")
             await self._clock.sleep(self._interval)
+
+    def _activate(self, active: dict[str, dict[str, Any]], kind: str, **fields: Any) -> None:
+        if kind == "drift":
+            key = f"drift:{fields['agent']}:{fields['reason']}"
+        else:
+            key = f"orphan:{fields['resource']}:{fields['name']}"
+        previous = self._active.get(key)
+        since = previous["since"] if previous else self._clock.now_iso()
+        active[key] = {"key": key, "kind": kind, "since": since, **fields}
 
     def _emit(self, kind: str, agent: str | None, **data: Any) -> None:
         self._events.emit(

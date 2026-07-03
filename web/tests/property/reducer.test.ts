@@ -1,5 +1,6 @@
 /** PU4-3 — event reducer: consecutive-duplicate idempotence, full-stream
- * replay convergence (WS replay + live overlap), bounded invariants. */
+ * replay convergence (WS replay + live overlap), bounded invariants.
+ * Plus alert-ux toast-policy invariants over arbitrary interleavings. */
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 
@@ -11,6 +12,7 @@ import {
   reduceEvent,
   type LiveState,
 } from '../../src/lib/reducer'
+import { initialShellState, shellReducer, type ShellAction } from '../../src/state/AppStore'
 import type { CoreEvent } from '../../src/lib/types'
 
 const KNOWN_KINDS = [
@@ -102,5 +104,94 @@ describe('PU4-3 live-state reducer', () => {
     expect(reduceEvent(initialLiveState, done).agentsStale).toBe(true)
     const other: CoreEvent = { ...done, data: { job_id: 'j2', kind: 'other' } }
     expect(reduceEvent(initialLiveState, other).agentsStale).toBe(false)
+  })
+})
+
+// -- alert-ux: toast policy under arbitrary replay/marker/live/snapshot mixes --
+
+const AGENTS = ['a1', 'a2'] as const
+const keyOf = (agent: string): string => `drift:${agent}:gateway-not-running`
+
+let shellTs = 0
+const shellAlertAction: fc.Arbitrary<ShellAction> = fc.oneof(
+  fc
+    .record({
+      agent: fc.constantFrom(...AGENTS),
+      kind: fc.constantFrom('drift.detected', 'drift.remediated') as fc.Arbitrary<
+        'drift.detected' | 'drift.remediated'
+      >,
+    })
+    .map(
+      ({ agent, kind }): ShellAction => ({
+        type: 'ws-event',
+        event: {
+          kind,
+          agent,
+          data:
+            kind === 'drift.detected'
+              ? { reason: 'gateway-not-running' }
+              : { action: 'gateway-restarted' },
+          ts: `t${shellTs++}`,
+        },
+      }),
+    ),
+  fc.constant<ShellAction>({
+    type: 'ws-event',
+    event: { kind: 'events.synced', agent: null, data: {}, ts: 'sync' },
+  }),
+  fc.uniqueArray(fc.constantFrom(...AGENTS)).map(
+    (agents): ShellAction => ({
+      type: 'alerts-snapshot',
+      snapshot: {
+        alerts: agents.map((agent) => ({
+          key: keyOf(agent),
+          kind: 'drift' as const,
+          agent,
+          reason: 'gateway-not-running',
+          since: 's1',
+        })),
+        checked_at: 'c1',
+      },
+    }),
+  ),
+  fc.constantFrom('connected' as const, 'reconnecting' as const, 'down' as const).map(
+    (status): ShellAction => ({ type: 'connection', status }),
+  ),
+)
+
+describe('alert-ux shell toast policy', () => {
+  it('holds its invariants under arbitrary interleavings', () => {
+    fc.assert(
+      fc.property(fc.array(shellAlertAction, { maxLength: 80 }), (actions) => {
+        let state = initialShellState
+        for (const action of actions) {
+          const next = shellReducer(state, action)
+          const toastAdded = next.toasts !== state.toasts
+          if (action.type === 'ws-event') {
+            // pre-sync (replay) events NEVER toast — FR-2
+            if (!state.synced) expect(toastAdded).toBe(false)
+            // an already-active condition never re-toasts — FR-4
+            if (
+              state.synced &&
+              action.event.kind === 'drift.detected' &&
+              keyOf(action.event.agent!) in state.activeAlerts
+            ) {
+              expect(toastAdded).toBe(false)
+            }
+            // the marker is never history — NFR-1
+            expect(next.live.eventLog.every((e) => e.kind !== 'events.synced')).toBe(true)
+          }
+          if (action.type === 'alerts-snapshot') {
+            // snapshot is authoritative: active set == snapshot keys exactly
+            expect(Object.keys(next.activeAlerts).sort()).toEqual(
+              action.snapshot.alerts.map((a) => a.key).sort(),
+            )
+          }
+          expect(next.live.alerts.length).toBeLessThanOrEqual(ALERT_LIMIT)
+          expect(next.toasts.length).toBeLessThanOrEqual(5)
+          state = next
+        }
+      }),
+    )
   })
 })

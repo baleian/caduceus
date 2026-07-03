@@ -20,7 +20,7 @@
 
 ### 데몬 — FR-1 활성 스냅샷, FR-2 replay 마커 (Q1=A, Q2=A)
 
-- [ ] **S1. Reconciler 활성 condition 스냅샷** (`caduceus/control/reconciler.py`)
+- [x] **S1. Reconciler 활성 condition 스냅샷** (`caduceus/control/reconciler.py`)
   - `_active: dict[str, dict[str, Any]]` + `_checked_at: str | None` 유지;
     `reconcile_once()`가 매 주기 새 dict를 구성해 완료 시 원자 교체
   - 지속 key는 이전 `since` 보존, 신규 key는 `clock.now_iso()`
@@ -29,13 +29,13 @@
   - `alerts_snapshot() -> dict[str, Any]`: `{"alerts": [payload...], "checked_at": ...}`
     (payload에 `key`, `kind`("drift"|"orphan"), `agent`/`reason`/`keys`/`resource`/`name`, `since`)
   - 감지 단계 예외 시 루프 생존 계약 유지 — 스냅샷은 마지막 성공 주기 것 보존(NFR-3)
-- [ ] **S2. API 노출 + WS 마커** (`caduceus/control/api.py`, `caduceus/daemon.py`)
+- [x] **S2. API 노출 + WS 마커** (`caduceus/control/api.py`, `caduceus/daemon.py`)
   - `build_admin_router`에 `alerts_snapshot: Callable[[], dict]`, `clock: Clock` 주입
     (daemon.py 배선: `reconciler.alerts_snapshot`, `clock`)
   - `GET /api/alerts` → 스냅샷 그대로 반환 (기존 인증 미들웨어 적용)
   - `events_ws`: replay 루프 종료 직후
     `CoreEvent(kind="events.synced", agent=None, data={}, ts=clock.now_iso())` 1건 전송
-- [ ] **S3. 데몬 테스트**
+- [x] **S3. 데몬 테스트**
   - `tests/unit/test_prober_reconciler.py`: 감지↔활성 일치 / 해소 시 다음 주기 제거 /
     지속 시 `since` 보존 / 재시작 성공 시 미활성 / orphan 입양 시 제거
   - `tests/property/`(Hypothesis, PBT 확장): 임의 감지 상태 시퀀스에 대해
@@ -45,10 +45,10 @@
 
 ### 웹 — FR-2/3/4 토스트 정책 + 동기화 (Q2=A, Q4=A), FR-5 이력 유지
 
-- [ ] **S4. 타입 + 클라이언트** (`web/src/lib/types.ts`, `web/src/api/client.ts`)
+- [x] **S4. 타입 + 클라이언트** (`web/src/lib/types.ts`, `web/src/api/client.ts`)
   - `ActiveAlert`(key/kind/agent/reason/keys/resource/name/since) + 스냅샷 응답 타입
   - `getAlerts(): Promise<AlertsSnapshot>` (`GET /api/alerts`)
-- [ ] **S5. 토스트 정책 + 활성 맵** (`web/src/lib/reducer.ts`, `web/src/state/AppStore.tsx`)
+- [x] **S5. 토스트 정책 + 활성 맵** (`web/src/lib/reducer.ts`, `web/src/state/AppStore.tsx`)
   - condition 키 헬퍼(이벤트·DTO 공용, 데몬과 동일 규칙)
   - `ShellState`에 `synced: boolean`, `activeAlerts: Record<string, ActiveAlert>` 추가
   - `events.synced`: `synced=true`, 이력·eventLog 미적재(reduceEvent 명시 무시 — NFR-1);
@@ -58,19 +58,19 @@
     제거(`drift.remediated`, live 수신 시 info 토스트)
   - 새 액션 `alerts-snapshot`: `activeAlerts` 교체, 이전 맵에 없던 key만 토스트
     (첫 로딩 = 빈 맵 → 활성 전부 1회 토스트 — FR-3)
-- [ ] **S6. 접속 동기화 + 조건부 폴링** (`web/src/state/AppStore.tsx`)
+- [x] **S6. 접속 동기화 + 조건부 폴링** (`web/src/state/AppStore.tsx`)
   - `onConnected` → `refetchAgents`와 함께 `refetchAlerts`
   - drift/orphan live 이벤트 수신 시 `refetchAlerts`(디바운스)
   - `activeAlerts`가 비어있지 않은 동안만 reconcile 주기(30s) 폴링, 비면 중단(Q4=A)
   - 조회 실패는 조용히 스킵 — 마지막 성공 스냅샷 유지(NFR-3)
-- [ ] **S7. Dashboard 알림 패널 교체 (Q3=A)** (`web/src/pages/dashboard/DashboardPage.tsx`)
+- [x] **S7. Dashboard 알림 패널 교체 (Q3=A)** (`web/src/pages/dashboard/DashboardPage.tsx`)
   - "Alerts" 카드 → `activeAlerts` 기반: subtitle "active now",
     빈 상태 "no active alerts", 항목에 reason/resource·`since` 표시,
     `data-testid="dashboard-active-alerts"`
-- [ ] **S8. System 보드 무변경 검증** (`web/src/pages/system/SystemPage.tsx`)
+- [x] **S8. System 보드 무변경 검증** (`web/src/pages/system/SystemPage.tsx`)
   - 이력 목록 현행 동작 확인(FR-5), `events.synced`가 Unrecognized events에
     노출되지 않는지 확인(NFR-1)
-- [ ] **S9. 웹 테스트**
+- [x] **S9. 웹 테스트**
   - `web/tests/unit/state.test.ts`: 마커 전 replay 무토스트 / 마커 후 신규 key 토스트 /
     동일 key 재수신 무토스트 / remediated 제거+info 토스트 / 스냅샷 diff 토스트 /
     재접속 시 synced 리셋
@@ -78,7 +78,7 @@
     불변식 — 마커 전 토스트 0, 활성 지속 중 key당 토스트 ≤ 1,
     eventLog에 `events.synced` 없음, `alerts` 이력 bounded 유지
   - `web/tests/unit/client.test.ts`: `getAlerts` 요청 경로·토큰·에러 정규화
-- [ ] **S10. 검증 + 산출물**
+- [x] **S10. 검증 + 산출물**
   - 데몬: ruff / mypy / pytest 전체 통과
   - 웹: tsc / eslint / vitest / Playwright E2E / vite build → `web_dist` 갱신
   - `aidlc-docs/construction/alert-ux-improvements/code-summary.md` 작성,

@@ -6,6 +6,7 @@
 import type {
   AgentRecord,
   AgentStatus,
+  AlertsSnapshot,
   ApprovalsMode,
   DeepStatus,
   GatewayInfo,
@@ -217,6 +218,11 @@ export class ApiClient {
 
   deepStatus(): Promise<DeepStatus> {
     return this.request('GET', '/api/status')
+  }
+
+  /** Drift/orphan conditions active as of the last reconcile cycle. */
+  getAlerts(): Promise<AlertsSnapshot> {
+    return this.request('GET', '/api/alerts')
   }
 
   // -- agent api_server relay (S2) ---------------------------------------------

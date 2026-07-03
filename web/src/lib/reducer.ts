@@ -7,7 +7,7 @@
  * recentRequests ≤ RECENT_LIMIT, eventLog ≤ EVENT_LOG_LIMIT, alerts ≤ ALERT_LIMIT.
  */
 
-import type { CoreEvent } from './types'
+import type { ActiveAlert, CoreEvent } from './types'
 
 export const RECENT_LIMIT = 100
 export const EVENT_LOG_LIMIT = 500
@@ -71,6 +71,53 @@ function num(value: unknown): number {
 
 function bounded<T>(list: T[], limit: number): T[] {
   return list.length > limit ? list.slice(list.length - limit) : list
+}
+
+/** Condition identity — MUST match the daemon's alerts-snapshot key rule:
+ * "drift:{agent}:{reason}" / "orphan:{resource}:{name}". */
+export function conditionKey(event: CoreEvent): string | null {
+  if (event.kind === 'drift.detected' || event.kind === 'drift.remediated') {
+    // remediation only exists for dead gateways (reconciler R5)
+    const reason =
+      event.kind === 'drift.remediated' ? 'gateway-not-running' : str(event.data['reason'])
+    return event.agent && reason ? `drift:${event.agent}:${reason}` : null
+  }
+  if (event.kind === 'orphan.detected') {
+    const resource = str(event.data['resource'])
+    const name = str(event.data['name'])
+    return resource && name ? `orphan:${resource}:${name}` : null
+  }
+  return null
+}
+
+export function activeAlertFromEvent(event: CoreEvent, key: string): ActiveAlert {
+  if (event.kind === 'orphan.detected') {
+    return {
+      key,
+      kind: 'orphan',
+      since: event.ts,
+      resource: str(event.data['resource']),
+      name: str(event.data['name']),
+    }
+  }
+  const keys = Array.isArray(event.data['keys'])
+    ? (event.data['keys'] as unknown[]).filter((k): k is string => typeof k === 'string')
+    : undefined
+  return {
+    key,
+    kind: 'drift',
+    since: event.ts,
+    agent: event.agent ?? undefined,
+    reason: str(event.data['reason']),
+    ...(keys ? { keys } : {}),
+  }
+}
+
+export function alertLabel(alert: ActiveAlert): string {
+  if (alert.kind === 'orphan') {
+    return `orphan ${alert.resource ?? ''} — ${alert.name ?? ''}`
+  }
+  return `drift — ${alert.agent ?? '?'} (${alert.reason ?? ''})`
 }
 
 function applyJob(state: LiveState, event: CoreEvent): LiveState {
@@ -176,6 +223,9 @@ export function reduceEvent(state: LiveState, event: CoreEvent): LiveState {
       }
       return { ...state, alerts: bounded([...state.alerts, alert], ALERT_LIMIT) }
     }
+    case 'events.synced':
+      // replay/live boundary marker — a shell-level signal, never history
+      return state
     default: {
       // unknown kinds: event log only (forward compatibility)
       if (

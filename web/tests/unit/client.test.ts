@@ -96,4 +96,23 @@ describe('ApiClient', () => {
     await client.agentApi('a1', 'GET', 'api/sessions')
     expect(calls[0]!.url).toBe('/agents/a1/api/api/sessions')
   })
+
+  it('fetches the active-alerts snapshot with the admin token', async () => {
+    const snapshot = {
+      alerts: [
+        {
+          key: 'drift:a1:gateway-not-running',
+          kind: 'drift',
+          agent: 'a1',
+          reason: 'gateway-not-running',
+          since: 's1',
+        },
+      ],
+      checked_at: 'c1',
+    }
+    const { client, calls } = makeClient(() => ok(snapshot))
+    await expect(client.getAlerts()).resolves.toEqual(snapshot)
+    expect(calls[0]!.url).toBe('/api/alerts')
+    expect(calls[0]!.headers['X-Caduceus-Token']).toBe('tok-123')
+  })
 })

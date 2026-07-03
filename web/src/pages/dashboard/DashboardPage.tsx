@@ -68,7 +68,10 @@ export function DashboardPage(): ReactNode {
   const activeJobs = jobs.filter((j) => j.state !== 'done' && j.state !== 'failed').length
   const usageRows = (usage ?? []).filter((u) => u.reachable)
   const hasTokenData = usageRows.some((u) => u.inputTokens + u.cacheReadTokens + u.outputTokens > 0)
-  const alerts = state.live.alerts.slice().reverse().slice(0, 8)
+  // Q3=A: current conditions only — the System board keeps the session history
+  const alerts = Object.values(state.activeAlerts)
+    .sort((a, b) => (a.since < b.since ? 1 : -1))
+    .slice(0, 8)
 
   return (
     <div data-testid="dashboard-page">
@@ -186,20 +189,22 @@ export function DashboardPage(): ReactNode {
           </Card>
 
           <Card>
-            <CardHeader title="Alerts" subtitle="drift / orphan events this session" />
+            <CardHeader title="Alerts" subtitle="active now" />
             {alerts.length === 0 ? (
-              <p className="py-4 text-center text-sm text-ink-dim">none this session</p>
+              <p className="py-4 text-center text-sm text-ink-dim">no active alerts</p>
             ) : (
-              <ul className="space-y-2">
-                {alerts.map((alert, index) => (
+              <ul className="space-y-2" data-testid="dashboard-active-alerts">
+                {alerts.map((alert) => (
                   <li
-                    key={index}
+                    key={alert.key}
                     className="rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1.5 text-xs"
                   >
-                    <span className="font-medium text-warn">{alert.kind}</span>
-                    {alert.agent && <span className="text-ink"> — {alert.agent}</span>}
+                    <span className="font-medium text-warn">
+                      {alert.kind === 'drift' ? `drift: ${alert.reason ?? ''}` : `orphan ${alert.resource ?? ''}`}
+                    </span>
+                    <span className="text-ink"> — {alert.kind === 'drift' ? alert.agent : alert.name}</span>
                     <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
-                      {alert.ts}
+                      since {alert.since}
                     </span>
                   </li>
                 ))}
