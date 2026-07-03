@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: 개선 — 채팅 UX (지연 렌더 + 자동 스크롤/뱃지 + 완료 시 포커스 + 입력창 리디자인). Requirements 승인(Q1=A/Q2=A/Q3=A). Code Gen Part 1 완료 — plan.md(S1~S10) 승인 대기. 어댑티브: App/Functional/NFR Design 스킵. plan: `construction/chat-ux-improvements/plan.md`.
+- **Current Stage**: 개선 — 채팅 UX (지연 렌더 + 자동 스크롤/뱃지 + 완료 시 포커스 + 입력창 리디자인). Plan 승인(Q1=A/Q2=A/Q3=A, 계획 커밋 a3d5e05) → Part 2 Generation 완료(S1~S10 전체 [x]) — tsc/eslint/vitest 54/E2E 14/build 전부 통과, web_dist 갱신. **APPROVED & 커밋됨 (2026-07-04)**. plan: `construction/chat-ux-improvements/plan.md`, 요약: 동 폴더 code-summary.md.
 - **직전 Stage**: 개선 — U4 Web UI 전면 재설계 (2026-07-03, plan: web-ui-redesign/plan.md, 답변 Q1=A/Q2=A/Q3=B/Q4=A). Part 2 Generation 완료(S1~S14) — typecheck/lint/vitest 48/E2E 14/build 전부 통과. APPROVED & 커밋됨.
 - **Next Stage**: Build and Test (전 유닛)
 - **직전 완료**: 토큰 usage hermes-native 전환 — 커밋 15b122e/353067a 반영 완료.

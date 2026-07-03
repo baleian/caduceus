@@ -10,18 +10,26 @@
  * actions it returns. */
 
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   Cog,
   Loader2,
   Pencil,
   Plus,
-  Send,
   ShieldAlert,
   Square,
   Trash2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { Link, useBlocker, useParams } from 'react-router-dom'
 
 import {
@@ -48,6 +56,7 @@ import {
   type ApprovalChoice,
   type ChatState,
 } from '../../lib/chatMachine'
+import { INITIAL_WINDOW, growWindow, isPinned, windowStart } from '../../lib/chatScroll'
 import { redact } from '../../lib/redact'
 import {
   historyFromMessages,
@@ -72,6 +81,15 @@ function timeAgo(iso: string | null | undefined): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
+}
+
+/** FR-4: grow the composer with its content up to ~8 lines (matches the
+ * `max-h-52` cap = 208px), after which it scrolls internally. */
+const COMPOSER_MAX_HEIGHT_PX = 208
+
+function autoGrowComposer(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`
 }
 
 interface ToolCall {
@@ -114,7 +132,19 @@ export function ChatView(): ReactNode {
   const machineRef = useRef<ChatState>('idle')
   const runIdRef = useRef<string | null>(null)
   const [machineUi, setMachineUi] = useState<ChatState>('idle')
-  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // FR-1/FR-2 (chat-ux): lazy render window over the transcript + bottom
+  // pinning. Pinned lives in a ref — it changes on every scroll frame and
+  // must never re-render; the badge is its only rendered projection.
+  const [visibleCount, setVisibleCount] = useState(INITIAL_WINDOW)
+  const [showNewBadge, setShowNewBadge] = useState(false)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const topSentinelRef = useRef<HTMLDivElement>(null)
+  const pinnedRef = useRef(true)
+  const growAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const transcriptRef = useRef<TranscriptItem[]>([])
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const wasStreamingRef = useRef(false)
 
   function setMachine(state: ChatState): void {
     machineRef.current = state
@@ -139,12 +169,28 @@ export function ChatView(): ReactNode {
   }, [client, agent])
 
   const hydrate = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, opts?: { preserveView?: boolean }) => {
       // W7: server store is the single source — discard any local transcript
       const messages = await fetchMessages(client, agent, sessionId)
-      setTranscript(transcriptFromMessages(messages))
+      const items = transcriptFromMessages(messages)
+      const grewBy = Math.max(0, items.length - transcriptRef.current.length)
+      transcriptRef.current = items
+      setTranscript(items)
       setTurn(EMPTY_TURN)
-      queueMicrotask(() => bottomRef.current?.scrollIntoView({ block: 'end' }))
+      if (opts?.preserveView && !pinnedRef.current) {
+        // end-of-turn refresh while the user reads older history: grow the
+        // window by the appended turn so the same items stay mounted, and let
+        // the content effect raise the badge instead of yanking the viewport.
+        setVisibleCount((count) => count + grewBy)
+        return
+      }
+      setVisibleCount(INITIAL_WINDOW)
+      pinnedRef.current = true
+      setShowNewBadge(false)
+      queueMicrotask(() => {
+        const el = scrollerRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
     },
     [client, agent],
   )
@@ -188,6 +234,79 @@ export function ChatView(): ReactNode {
     }
   }, [refreshSessions, selectSession])
 
+  // FR-2: follow the stream while pinned; otherwise leave the viewport alone
+  // and surface the Slack-style badge. Fires on every content change
+  // (stream deltas, tool chips, notes, hydration).
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    if (pinnedRef.current) el.scrollTop = el.scrollHeight
+    else setShowNewBadge(true)
+  }, [transcript, turn])
+
+  // FR-1 (Q2=A): grow the window when the top sentinel nears the viewport;
+  // snapshot the pre-grow geometry so the layout effect below can anchor.
+  useEffect(() => {
+    const sentinel = topSentinelRef.current
+    const root = scrollerRef.current
+    if (!sentinel || !root) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return
+        setVisibleCount((count) => {
+          const total = transcriptRef.current.length
+          if (count >= total) return count
+          const el = scrollerRef.current
+          if (el) growAnchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
+          return growWindow(count, total)
+        })
+      },
+      { root, rootMargin: '160px 0px 0px 0px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [])
+
+  // FR-1: scroll anchoring — offset by the height the prepended chunk added
+  // so the viewport keeps showing the same items (no jump).
+  useLayoutEffect(() => {
+    const anchor = growAnchorRef.current
+    const el = scrollerRef.current
+    if (!anchor || !el) return
+    growAnchorRef.current = null
+    el.scrollTop = anchor.scrollTop + (el.scrollHeight - anchor.scrollHeight)
+  }, [visibleCount])
+
+  // FR-3: when the turn finishes while the user is following along (pinned),
+  // hand the keyboard back to the composer for the next turn.
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming && pinnedRef.current) {
+      composerRef.current?.focus()
+    }
+    wasStreamingRef.current = streaming
+  }, [streaming])
+
+  // FR-4: composer auto-grow collapses back once the input empties (send/clear)
+  useEffect(() => {
+    const el = composerRef.current
+    if (el && input === '') el.style.height = 'auto'
+  }, [input])
+
+  function handleScroll(): void {
+    const el = scrollerRef.current
+    if (!el) return
+    pinnedRef.current = isPinned(el.scrollHeight - el.scrollTop - el.clientHeight)
+    if (pinnedRef.current) setShowNewBadge(false)
+  }
+
+  function jumpToLatest(): void {
+    const el = scrollerRef.current
+    if (!el) return
+    pinnedRef.current = true
+    setShowNewBadge(false)
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
+
   async function newSession(): Promise<void> {
     try {
       const id = await createSession(client, agent)
@@ -206,6 +325,9 @@ export function ChatView(): ReactNode {
     setMachine(next)
     setInput('')
     setTurn({ ...EMPTY_TURN, userText: text })
+    // sending your own message always jumps to the bottom (Slack/ChatGPT parity)
+    pinnedRef.current = true
+    setShowNewBadge(false)
     // CLI parity (U3 Q4=A): no session yet → create one lazily on first message
     let sessionId = activeId
     try {
@@ -233,10 +355,11 @@ export function ChatView(): ReactNode {
       runIdRef.current = null
       setApproval(null)
       // turn is over: the server store has the authoritative record (W7) —
-      // re-hydrate so tool results/failure details replace the live buffers
+      // re-hydrate so tool results/failure details replace the live buffers.
+      // preserveView: if the user scrolled up mid-stream, don't yank them.
       if (sessionId) {
         try {
-          await hydrate(sessionId)
+          await hydrate(sessionId, { preserveView: true })
           await refreshSessions()
         } catch {
           // hydration failure keeps the live buffers visible; badge shows reachability
@@ -379,6 +502,7 @@ export function ChatView(): ReactNode {
         if (latest) await selectSession(latest.id)
         else {
           setActiveId(null)
+          transcriptRef.current = []
           setTranscript([])
         }
       }
@@ -391,6 +515,9 @@ export function ChatView(): ReactNode {
 
   const agentLive = state.live.agents[agent]
   const agentListed = state.agents.find((a) => a.name === agent)
+  // FR-1: only the newest `visibleCount` transcript items are mounted; keys
+  // are absolute indices so growing the window never remounts existing items.
+  const mountedFrom = windowStart(transcript.length, visibleCount)
 
   return (
     <div className="flex h-full" data-testid="chat-view">
@@ -466,25 +593,50 @@ export function ChatView(): ReactNode {
           <SessionUsage session={activeSession} />
         </header>
 
-        <div className="flex-1 overflow-y-auto" data-testid="chat-transcript">
-          <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
-            {loadError && (
-              <p className="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{loadError}</p>
-            )}
-            {!loadError && !activeId && (
-              <div className="py-16 text-center">
-                <p className="text-sm font-medium text-ink">Start a conversation</p>
-                <p className="mt-1 text-xs text-ink-dim">
-                  Just type below — a session is created automatically.
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={scrollerRef}
+            onScroll={handleScroll}
+            className="h-full overflow-y-auto"
+            data-testid="chat-transcript"
+          >
+            <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
+              <div ref={topSentinelRef} aria-hidden />
+              {mountedFrom > 0 && (
+                <p
+                  className="text-center text-xs text-ink-faint"
+                  data-testid="chat-earlier-indicator"
+                >
+                  {fmt(mountedFrom)} earlier message{mountedFrom === 1 ? '' : 's'} — scroll up to
+                  load
                 </p>
-              </div>
-            )}
-            {transcript.map((item, index) => (
-              <TranscriptBlock key={index} item={item} />
-            ))}
-            <LiveTurnBlock turn={turn} streaming={streaming} />
-            <div ref={bottomRef} />
+              )}
+              {loadError && (
+                <p className="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{loadError}</p>
+              )}
+              {!loadError && !activeId && (
+                <div className="py-16 text-center">
+                  <p className="text-sm font-medium text-ink">Start a conversation</p>
+                  <p className="mt-1 text-xs text-ink-dim">
+                    Just type below — a session is created automatically.
+                  </p>
+                </div>
+              )}
+              {transcript.slice(mountedFrom).map((item, index) => (
+                <TranscriptBlock key={mountedFrom + index} item={item} />
+              ))}
+              <LiveTurnBlock turn={turn} streaming={streaming} />
+            </div>
           </div>
+          {showNewBadge && (
+            <button
+              data-testid="chat-new-messages-badge"
+              onClick={jumpToLatest}
+              className="absolute bottom-4 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-accent-strong px-3.5 py-1.5 text-xs font-medium text-white shadow-lg shadow-accent-strong/30 transition-transform hover:scale-105"
+            >
+              <ArrowDown size={12} aria-hidden /> New messages
+            </button>
+          )}
         </div>
 
         {approval && (
@@ -514,51 +666,65 @@ export function ChatView(): ReactNode {
           </div>
         )}
 
-        <footer className="border-t border-edge bg-panel px-6 py-4">
-          <div className="mx-auto flex max-w-3xl items-end gap-2">
-            <textarea
-              data-testid="chat-composer-input"
-              rows={2}
-              className={`${INPUT_CLASS} flex-1 resize-none`}
-              placeholder={
-                streaming ? 'turn in progress…' : 'message (Enter to send, Shift+Enter for newline)'
-              }
-              value={input}
-              disabled={streaming}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void submit()
-                }
-              }}
-            />
-            {streaming ? (
-              <Button
-                variant="danger"
-                size="md"
-                testId="chat-stop-button"
-                disabled={machineUi === 'stopping'}
-                onClick={interrupt}
-              >
-                {machineUi === 'stopping' ? (
-                  <Loader2 size={14} className="animate-spin" aria-hidden />
-                ) : (
-                  <Square size={14} aria-hidden />
-                )}
-                {machineUi === 'stopping' ? 'Stopping…' : 'Stop'}
-              </Button>
-            ) : (
-              <Button
-                variant="gradient"
-                size="md"
-                testId="chat-send-button"
-                disabled={!input.trim()}
-                onClick={() => void submit()}
-              >
-                <Send size={14} aria-hidden /> Send
-              </Button>
-            )}
+        <footer className="border-t border-edge bg-panel px-6 pt-4 pb-3">
+          <div className="mx-auto max-w-3xl">
+            {/* FR-4 (Q3=A): one rounded surface — borderless auto-growing
+                textarea + integrated round send/stop button, focus ring on
+                the container. Typing stays enabled mid-stream; submitting is
+                still gated to idle by the chat machine. */}
+            <div className="flex items-end gap-2 rounded-2xl border border-edge bg-surface px-4 py-2.5 shadow-sm transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/15">
+              <textarea
+                ref={composerRef}
+                data-testid="chat-composer-input"
+                rows={1}
+                className="max-h-52 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm leading-6 placeholder:text-ink-faint focus:outline-none"
+                placeholder={`Message ${agent}…`}
+                aria-label={`Message ${agent}`}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  autoGrowComposer(e.currentTarget)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void submit() // no-op unless idle (machine gate)
+                  }
+                }}
+              />
+              {streaming ? (
+                <button
+                  data-testid="chat-stop-button"
+                  aria-label={machineUi === 'stopping' ? 'Stopping' : 'Stop the current turn'}
+                  title={machineUi === 'stopping' ? 'Stopping…' : 'Stop the current turn'}
+                  disabled={machineUi === 'stopping'}
+                  onClick={interrupt}
+                  className="mb-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-bad text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  {machineUi === 'stopping' ? (
+                    <Loader2 size={15} className="animate-spin" aria-hidden />
+                  ) : (
+                    <Square size={13} aria-hidden />
+                  )}
+                </button>
+              ) : (
+                <button
+                  data-testid="chat-send-button"
+                  aria-label="Send message"
+                  title="Send (Enter)"
+                  disabled={!input.trim()}
+                  onClick={() => void submit()}
+                  className="mb-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-brand-gradient text-white shadow-sm shadow-accent/30 transition-all hover:brightness-110 disabled:pointer-events-none disabled:opacity-35"
+                >
+                  <ArrowUp size={15} aria-hidden />
+                </button>
+              )}
+            </div>
+            <p className="mt-1.5 text-center text-[11px] text-ink-faint">
+              {streaming
+                ? 'turn in progress — you can type your next message'
+                : 'Enter to send · Shift+Enter for newline'}
+            </p>
           </div>
         </footer>
       </section>
