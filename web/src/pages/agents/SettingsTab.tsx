@@ -7,6 +7,9 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { ApiError } from '../../api/client'
 import { ConfirmModal } from '../../components/ConfirmModal'
+import { Button } from '../../components/ui/Button'
+import { Card, CardHeader } from '../../components/ui/Card'
+import { INPUT_CLASS, INPUT_MONO_CLASS } from '../../components/ui/Field'
 import { MAX_SOUL_BYTES, parseToolsetsText, renderToolsetsText, utf8Bytes } from '../../lib/forms'
 import type { ApprovalsMode } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
@@ -134,16 +137,16 @@ export function SettingsTab(props: { agent: string }): ReactNode {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="max-w-4xl space-y-4">
       {needsRestart && (
         <div
           data-testid="settings-restart-banner"
-          className="flex items-center justify-between rounded border border-warn/50 bg-warn/10 px-3 py-2 text-sm"
+          className="flex items-center justify-between rounded-xl border border-warn/50 bg-warn/10 px-4 py-2.5 text-sm"
         >
           <span>Changes saved — the agent gateway must restart to pick them up (S6).</span>
           <button
             data-testid="settings-restart-button"
-            className="rounded bg-warn px-3 py-1 text-sm font-medium text-white"
+            className="rounded-lg bg-warn px-3 py-1.5 text-sm font-medium text-white hover:brightness-110"
             onClick={() => void restart()}
           >
             Restart now
@@ -151,37 +154,38 @@ export function SettingsTab(props: { agent: string }): ReactNode {
         </div>
       )}
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Persona (SOUL.md)</h2>
+      <Card>
+        <CardHeader
+          title="Persona (SOUL.md)"
+          actions={
+            <Button
+              testId="settings-soul-save-button"
+              disabled={!soulDirty}
+              onClick={() => void saveSoul()}
+            >
+              Save persona
+            </Button>
+          }
+        />
         <textarea
           data-testid="settings-soul-editor"
-          rows={10}
-          className="w-full rounded border border-edge bg-panel p-3 font-mono text-sm"
+          rows={12}
+          className={INPUT_MONO_CLASS}
           value={soul}
           onChange={(e) => {
             setSoul(e.target.value)
             setSoulDirty(true)
           }}
         />
-        <div className="mt-1 flex items-center justify-between">
-          <span className="text-xs text-ink-dim">{utf8Bytes(soul)} bytes / 512KB</span>
-          <button
-            data-testid="settings-soul-save-button"
-            disabled={!soulDirty}
-            className="rounded bg-accent-strong px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
-            onClick={() => void saveSoul()}
-          >
-            Save persona
-          </button>
-        </div>
-      </section>
+        <p className="mt-1.5 text-xs text-ink-faint">{utf8Bytes(soul)} bytes / 512KB</p>
+      </Card>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Skills</h2>
+      <Card>
+        <CardHeader title="Skills" />
         {skills.length === 0 ? (
           <p className="text-sm text-ink-dim">No skills found for this profile.</p>
         ) : (
-          <ul className="divide-y divide-edge rounded border border-edge bg-panel">
+          <ul className="divide-y divide-edge rounded-lg border border-edge">
             {skills.map((skill) => (
               <li key={skill.name} className="flex items-center justify-between px-3 py-2 text-sm">
                 <span className="font-mono">{skill.name}</span>
@@ -190,8 +194,8 @@ export function SettingsTab(props: { agent: string }): ReactNode {
                   role="switch"
                   aria-checked={skill.enabled}
                   onClick={() => void toggleSkill(skill)}
-                  className={`rounded-full px-3 py-0.5 text-xs font-medium ${
-                    skill.enabled ? 'bg-ok/20 text-ok' : 'bg-ink-dim/15 text-ink-dim'
+                  className={`rounded-full px-3 py-0.5 text-xs font-medium transition-colors ${
+                    skill.enabled ? 'bg-ok/15 text-ok' : 'bg-ink-dim/15 text-ink-dim'
                   }`}
                 >
                   {skill.enabled ? 'enabled' : 'disabled'}
@@ -200,43 +204,45 @@ export function SettingsTab(props: { agent: string }): ReactNode {
             ))}
           </ul>
         )}
-      </section>
+      </Card>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Toolsets (api_server platform)</h2>
+      <Card>
+        <CardHeader
+          title="Toolsets"
+          subtitle="api_server platform — one toolset per line"
+          actions={
+            <Button
+              testId="settings-toolsets-save-button"
+              disabled={!toolsetsDirty}
+              onClick={() => void saveToolsets()}
+            >
+              Save toolsets
+            </Button>
+          }
+        />
         <textarea
           data-testid="settings-toolsets-editor"
           rows={4}
           placeholder="one toolset per line"
-          className="w-full rounded border border-edge bg-panel p-3 font-mono text-sm"
+          className={INPUT_MONO_CLASS}
           value={toolsetsText}
           onChange={(e) => {
             setToolsetsText(e.target.value)
             setToolsetsDirty(true)
           }}
         />
-        <div className="mt-1 flex justify-end">
-          <button
-            data-testid="settings-toolsets-save-button"
-            disabled={!toolsetsDirty}
-            className="rounded bg-accent-strong px-3 py-1 text-sm font-medium text-white disabled:opacity-40"
-            onClick={() => void saveToolsets()}
-          >
-            Save toolsets
-          </button>
-        </div>
-      </section>
+      </Card>
 
-      <section className="flex items-center justify-between rounded border border-edge bg-panel px-3 py-2">
+      <Card className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-semibold">Approvals mode</h2>
-          <p className="text-xs text-ink-dim">
+          <p className="mt-0.5 text-xs text-ink-dim">
             tool-approval policy rendered into the managed config
           </p>
         </div>
         <select
           data-testid="settings-approvals-select"
-          className="rounded border border-edge bg-surface px-2 py-1 text-sm"
+          className={`${INPUT_CLASS} w-auto`}
           value={approvals}
           onChange={(e) => void saveApprovals(e.target.value as ApprovalsMode)}
         >
@@ -244,24 +250,24 @@ export function SettingsTab(props: { agent: string }): ReactNode {
           <option value="smart">smart</option>
           <option value="manual">manual</option>
         </select>
-      </section>
+      </Card>
 
-      <section className="flex items-center justify-between rounded border border-edge bg-panel px-3 py-2">
+      <Card className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-semibold">Gateway token</h2>
-          <p className="text-xs text-ink-dim">
+          <p className="mt-0.5 text-xs text-ink-dim">
             rotate re-issues the proxy credential into the profile .env — the plaintext is never
             displayed (S3)
           </p>
         </div>
-        <button
-          data-testid="settings-token-rotate-button"
-          className="rounded border border-edge px-3 py-1 text-sm hover:bg-surface"
+        <Button
+          variant="outline"
+          testId="settings-token-rotate-button"
           onClick={() => setRotateOpen(true)}
         >
           Rotate token
-        </button>
-      </section>
+        </Button>
+      </Card>
 
       <ConfirmModal
         open={rotateOpen}

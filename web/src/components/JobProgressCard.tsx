@@ -3,12 +3,14 @@
  * fills in (S-U4-1.6). Steps render ✓ / ✗ / spinner, failures show the
  * redacted reason plus the no-rollback guidance. */
 
+import { Check, Dot, Loader2, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 
 import type { JobLive } from '../lib/reducer'
 import type { JobSnapshot } from '../lib/types'
 import { useApp } from '../state/AppStore'
 import { usePolling } from '../state/usePolling'
+import { Card } from './ui/Card'
 
 function fromSnapshot(snapshot: JobSnapshot): JobLive {
   return {
@@ -21,7 +23,13 @@ function fromSnapshot(snapshot: JobSnapshot): JobLive {
   }
 }
 
-const STEP_MARK: Record<string, string> = { ok: '✓', failed: '✗', running: '⟳', pending: '·' }
+function StepMark(props: { state: string }): ReactNode {
+  if (props.state === 'ok') return <Check size={14} className="text-ok" aria-label="ok" />
+  if (props.state === 'failed') return <X size={14} className="text-bad" aria-label="failed" />
+  if (props.state === 'running')
+    return <Loader2 size={14} className="animate-spin text-accent" aria-label="running" />
+  return <Dot size={14} className="text-ink-faint" aria-label="pending" />
+}
 
 export function JobProgressCard(props: { jobId: string; onDone?: () => void }): ReactNode {
   const { client, state } = useApp()
@@ -50,21 +58,22 @@ export function JobProgressCard(props: { jobId: string; onDone?: () => void }): 
 
   if (!live) {
     return (
-      <div
-        data-testid="job-progress-card"
-        className="rounded border border-edge bg-panel p-3 text-sm"
-      >
-        job {props.jobId} — waiting for progress…
-      </div>
+      <Card testId="job-progress-card" className="text-sm text-ink-dim">
+        <span className="inline-flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin" aria-hidden />
+          job {props.jobId} — waiting for progress…
+        </span>
+      </Card>
     )
   }
 
   return (
-    <div data-testid="job-progress-card" className="rounded border border-edge bg-panel p-3">
-      <div className="mb-2 flex items-center gap-2 text-sm">
+    <Card testId="job-progress-card">
+      <div className="mb-2 flex items-center gap-2.5 text-sm">
         <span className="font-medium">
           {live.kind} {live.agent ?? ''}
         </span>
+        {/* keep the state as plain text for the E2E toHaveText contract */}
         <span
           data-testid="job-progress-state"
           className={
@@ -78,21 +87,13 @@ export function JobProgressCard(props: { jobId: string; onDone?: () => void }): 
           {live.state}
         </span>
       </div>
-      <ul className="space-y-0.5 text-sm">
+      <ul className="space-y-1 text-sm">
         {live.steps.map((step) => (
           <li key={step.name} className="flex items-center gap-2">
-            <span
-              className={
-                step.state === 'ok'
-                  ? 'text-ok'
-                  : step.state === 'failed'
-                    ? 'text-bad'
-                    : 'animate-pulse text-ink-dim'
-              }
-            >
-              {STEP_MARK[step.state] ?? '·'}
+            <StepMark state={step.state} />
+            <span className={step.state === 'failed' ? 'text-bad' : 'text-ink-dim'}>
+              {step.name}
             </span>
-            <span className={step.state === 'failed' ? 'text-bad' : ''}>{step.name}</span>
           </li>
         ))}
       </ul>
@@ -102,6 +103,6 @@ export function JobProgressCard(props: { jobId: string; onDone?: () => void }): 
           workspace is preserved).
         </p>
       )}
-    </div>
+    </Card>
   )
 }

@@ -1,32 +1,32 @@
-/** Gateway page (Q7=A): upstream form (hot-swap), per-agent request traffic
- * (requests/errors/latency — proxy-level metadata hermes cannot see), and a
- * per-agent token-usage table summed from each agent's hermes sessions
- * (hermes-native usage — the proxy no longer counts tokens itself). */
+/** Gateway (Q7=A, redesign §6.5): upstream hot-swap card, per-agent token
+ * usage as a validated stacked bar chart + table (chart relief rule), request
+ * traffic table, and the live request feed. Usage is hermes-native — summed
+ * from each agent's sessions via the shared useAgentUsage fan-out. */
 
+import { RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
-import { listSessions } from '../../api/agentApi'
 import { ApiError } from '../../api/client'
+import { UsageBarChart } from '../../components/lazy'
+import { Button } from '../../components/ui/Button'
+import { Card, CardHeader } from '../../components/ui/Card'
+import { Field, INPUT_MONO_CLASS } from '../../components/ui/Field'
+import { PageHeader } from '../../components/ui/PageHeader'
+import { Skeleton } from '../../components/ui/Skeleton'
 import { validateUpstream } from '../../lib/forms'
 import type { GatewayInfo } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
+import { useAgentUsage } from '../../state/useAgentUsage'
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
 
-interface AgentUsage {
-  agent: string
-  sessions: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  costUsd: number
-  reachable: boolean
-}
+const TH_CLASS = 'px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-faint'
+const TD_CLASS = 'px-3 py-2'
 
 export function GatewayPage(): ReactNode {
   const { client, state, toast } = useApp()
   const [info, setInfo] = useState<GatewayInfo | null>(null)
-  const [usage, setUsage] = useState<AgentUsage[] | null>(null)
+  const { usage, reload: reloadUsage } = useAgentUsage()
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKeyEnv, setApiKeyEnv] = useState('')
@@ -45,52 +45,9 @@ export function GatewayPage(): ReactNode {
     }
   }, [client, toast])
 
-  // Per-agent usage = sum of that agent's hermes sessions' usage. Fan-out over
-  // agents; an unreachable/stopped agent degrades to reachable:false rather than
-  // failing the whole table.
-  const loadUsage = useCallback(async () => {
-    let agents
-    try {
-      agents = await client.listAgents()
-    } catch {
-      setUsage([])
-      return
-    }
-    const rows = await Promise.all(
-      agents.map(async (a): Promise<AgentUsage> => {
-        try {
-          const sessions = await listSessions(client, a.name)
-          const sum = (key: keyof (typeof sessions)[number]): number =>
-            sessions.reduce((n, s) => n + (Number(s[key]) || 0), 0)
-          return {
-            agent: a.name,
-            sessions: sessions.length,
-            inputTokens: sum('input_tokens'),
-            outputTokens: sum('output_tokens'),
-            cacheReadTokens: sum('cache_read_tokens'),
-            costUsd: sum('estimated_cost_usd'),
-            reachable: true,
-          }
-        } catch {
-          return {
-            agent: a.name,
-            sessions: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheReadTokens: 0,
-            costUsd: 0,
-            reachable: false,
-          }
-        }
-      }),
-    )
-    setUsage(rows)
-  }, [client])
-
   useEffect(() => {
     void refetch()
-    void loadUsage()
-  }, [refetch, loadUsage])
+  }, [refetch])
 
   async function save(): Promise<void> {
     const found = validateUpstream(baseUrl, apiKeyEnv)
@@ -117,183 +74,224 @@ export function GatewayPage(): ReactNode {
     }
   }
 
+  const usageRows = (usage ?? []).filter((u) => u.reachable)
+  const hasTokenData = usageRows.some((u) => u.inputTokens + u.cacheReadTokens + u.outputTokens > 0)
+
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Gateway</h1>
+    <div>
+      <PageHeader
+        title="Gateway"
+        description="one proxy in front of every agent — upstream, usage and traffic"
+      />
 
-      <section className="rounded border border-edge bg-panel p-4">
-        <h2 className="mb-3 text-sm font-semibold">
-          Upstream (hot-swap — one place for every agent)
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <label className="block sm:col-span-2">
-            <span className="mb-1 block text-xs font-medium text-ink-dim">base_url</span>
-            <input
-              data-testid="gateway-upstream-url-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 font-mono text-sm"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-            {errors.base_url && <span className="text-xs text-bad">{errors.base_url}</span>}
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-ink-dim">default model</span>
-            <input
-              data-testid="gateway-upstream-model-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 font-mono text-sm"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            />
-          </label>
-          <label className="block sm:col-span-2">
-            <span className="mb-1 block text-xs font-medium text-ink-dim">
-              api key env var (name only — the value never leaves the daemon host)
-            </span>
-            <input
-              data-testid="gateway-upstream-keyenv-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 font-mono text-sm"
-              placeholder="e.g. OPENAI_API_KEY"
-              value={apiKeyEnv}
-              onChange={(e) => setApiKeyEnv(e.target.value)}
-            />
-            {errors.api_key_env && <span className="text-xs text-bad">{errors.api_key_env}</span>}
-          </label>
-          <div className="flex items-end">
-            <button
-              data-testid="gateway-upstream-save-button"
-              disabled={saving}
-              className="rounded bg-accent-strong px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-              onClick={() => void save()}
-            >
-              {saving ? 'Applying…' : 'Apply'}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">
-            Token usage (per agent — summed from hermes sessions)
-          </h2>
-          <button
-            data-testid="gateway-usage-refresh-button"
-            className="rounded border border-edge px-3 py-1 text-sm hover:bg-panel"
-            onClick={() => void loadUsage()}
-          >
-            Refresh
-          </button>
-        </div>
-        <table className="w-full border-collapse text-sm" data-testid="gateway-usage-table">
-          <thead>
-            <tr className="border-b border-edge text-left text-xs uppercase tracking-wide text-ink-dim">
-              <th className="px-2 py-1.5">agent</th>
-              <th className="px-2 py-1.5">sessions</th>
-              <th className="px-2 py-1.5">input</th>
-              <th className="px-2 py-1.5">cache read</th>
-              <th className="px-2 py-1.5">output</th>
-              <th className="px-2 py-1.5">est. cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(usage ?? []).map((u) => (
-              <tr key={u.agent} className="border-b border-edge/60">
-                <td className="px-2 py-1.5 font-medium">{u.agent}</td>
-                <td className="px-2 py-1.5">
-                  {u.reachable ? u.sessions : <span className="text-ink-dim">unreachable</span>}
-                </td>
-                <td className="px-2 py-1.5">{fmt(u.inputTokens)}</td>
-                <td className="px-2 py-1.5">{fmt(u.cacheReadTokens)}</td>
-                <td className="px-2 py-1.5">{fmt(u.outputTokens)}</td>
-                <td className="px-2 py-1.5 font-mono text-xs">${u.costUsd.toFixed(4)}</td>
-              </tr>
-            ))}
-            {usage != null && usage.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-2 py-4 text-center text-ink-dim">
-                  no agents
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      {info && (
-        <section>
-          <h2 className="mb-2 text-sm font-semibold">
-            Request traffic since {info.traffic.since}
-            <span className="ml-2 font-normal text-ink-dim">
-              {info.traffic.totals.requests} requests · {info.traffic.totals.errors} errors
-            </span>
-          </h2>
-          <table className="w-full border-collapse text-sm" data-testid="gateway-traffic-table">
-            <thead>
-              <tr className="border-b border-edge text-left text-xs uppercase tracking-wide text-ink-dim">
-                <th className="px-2 py-1.5">agent</th>
-                <th className="px-2 py-1.5">requests</th>
-                <th className="px-2 py-1.5">errors</th>
-                <th className="px-2 py-1.5">last request</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(info.traffic.agents).map(([name, summary]) => (
-                <tr key={name} className="border-b border-edge/60">
-                  <td className="px-2 py-1.5 font-medium">{name}</td>
-                  <td className="px-2 py-1.5">{summary.requests}</td>
-                  <td className="px-2 py-1.5">{summary.errors}</td>
-                  <td className="px-2 py-1.5 font-mono text-xs">
-                    {summary.last_request_at ?? '—'}
-                  </td>
-                </tr>
-              ))}
-              {Object.keys(info.traffic.agents).length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-2 py-4 text-center text-ink-dim">
-                    no proxied requests yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          <button
-            data-testid="gateway-refresh-button"
-            className="mt-2 rounded border border-edge px-3 py-1 text-sm hover:bg-panel"
-            onClick={() => void refetch()}
-          >
-            Refresh
-          </button>
-        </section>
-      )}
-
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Recent requests (live, metadata only)</h2>
-        <ul
-          className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs"
-          data-testid="gateway-recent-list"
-        >
-          {state.live.recentRequests
-            .slice()
-            .reverse()
-            .map((request, index) => (
-              <li
-                key={index}
-                className="flex gap-3 rounded border border-edge/60 bg-panel px-2 py-1"
+      <div className="grid gap-4 2xl:grid-cols-2">
+        <Card className="2xl:col-span-2">
+          <CardHeader
+            title="Upstream"
+            subtitle="hot-swap — one place for every agent"
+            actions={
+              <Button
+                testId="gateway-upstream-save-button"
+                disabled={saving}
+                onClick={() => void save()}
               >
-                <span className="text-ink-dim">{request.ts}</span>
-                <span className="font-medium">{request.agent ?? '?'}</span>
-                <span>{request.model}</span>
-                <span className={request.status >= 400 ? 'text-bad' : 'text-ok'}>
-                  {request.status}
-                </span>
-                <span className="text-ink-dim">{request.latencyMs}ms</span>
-              </li>
-            ))}
-          {state.live.recentRequests.length === 0 && (
-            <li className="text-ink-dim">none since this page loaded</li>
+                {saving ? 'Applying…' : 'Apply'}
+              </Button>
+            }
+          />
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <Field label="base_url" error={errors.base_url}>
+                <input
+                  data-testid="gateway-upstream-url-input"
+                  className={INPUT_MONO_CLASS}
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                />
+              </Field>
+            </div>
+            <Field label="default model">
+              <input
+                data-testid="gateway-upstream-model-input"
+                className={INPUT_MONO_CLASS}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+            </Field>
+            <div className="lg:col-span-2">
+              <Field
+                label="api key env var"
+                hint="name only — the value never leaves the daemon host"
+                error={errors.api_key_env}
+              >
+                <input
+                  data-testid="gateway-upstream-keyenv-input"
+                  className={INPUT_MONO_CLASS}
+                  placeholder="e.g. OPENAI_API_KEY"
+                  value={apiKeyEnv}
+                  onChange={(e) => setApiKeyEnv(e.target.value)}
+                />
+              </Field>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Token usage"
+            subtitle="per agent — summed from hermes sessions"
+            actions={
+              <Button
+                variant="outline"
+                size="xs"
+                testId="gateway-usage-refresh-button"
+                onClick={() => void reloadUsage()}
+              >
+                <RefreshCw size={12} aria-hidden /> Refresh
+              </Button>
+            }
+          />
+          {usage === null ? (
+            <Skeleton className="h-40" />
+          ) : (
+            <>
+              {hasTokenData && <UsageBarChart rows={usageRows} />}
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full border-collapse text-sm" data-testid="gateway-usage-table">
+                  <thead>
+                    <tr className="border-b border-edge">
+                      <th className={TH_CLASS}>agent</th>
+                      <th className={TH_CLASS}>sessions</th>
+                      <th className={TH_CLASS}>input</th>
+                      <th className={TH_CLASS}>cache read</th>
+                      <th className={TH_CLASS}>output</th>
+                      <th className={TH_CLASS}>est. cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(usage ?? []).map((u) => (
+                      <tr key={u.agent} className="border-b border-edge/60 last:border-0">
+                        <td className={`${TD_CLASS} font-medium`}>{u.agent}</td>
+                        <td className={`${TD_CLASS} tabular-nums`}>
+                          {u.reachable ? (
+                            u.sessions
+                          ) : (
+                            <span className="text-ink-faint">unreachable</span>
+                          )}
+                        </td>
+                        <td className={`${TD_CLASS} tabular-nums`}>{fmt(u.inputTokens)}</td>
+                        <td className={`${TD_CLASS} tabular-nums`}>{fmt(u.cacheReadTokens)}</td>
+                        <td className={`${TD_CLASS} tabular-nums`}>{fmt(u.outputTokens)}</td>
+                        <td className={`${TD_CLASS} font-mono text-xs`}>${u.costUsd.toFixed(4)}</td>
+                      </tr>
+                    ))}
+                    {usage != null && usage.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="px-3 py-6 text-center text-ink-dim">
+                          no agents
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
-        </ul>
-      </section>
+        </Card>
+
+        <div className="space-y-4">
+          {info && (
+            <Card>
+              <CardHeader
+                title="Request traffic"
+                subtitle={
+                  <>
+                    since {info.traffic.since} — {fmt(info.traffic.totals.requests)} requests ·{' '}
+                    {fmt(info.traffic.totals.errors)} errors
+                  </>
+                }
+                actions={
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    testId="gateway-refresh-button"
+                    onClick={() => void refetch()}
+                  >
+                    <RefreshCw size={12} aria-hidden /> Refresh
+                  </Button>
+                }
+              />
+              <div className="overflow-x-auto">
+                <table
+                  className="w-full border-collapse text-sm"
+                  data-testid="gateway-traffic-table"
+                >
+                  <thead>
+                    <tr className="border-b border-edge">
+                      <th className={TH_CLASS}>agent</th>
+                      <th className={TH_CLASS}>requests</th>
+                      <th className={TH_CLASS}>errors</th>
+                      <th className={TH_CLASS}>last request</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(info.traffic.agents).map(([name, summary]) => (
+                      <tr key={name} className="border-b border-edge/60 last:border-0">
+                        <td className={`${TD_CLASS} font-medium`}>{name}</td>
+                        <td className={`${TD_CLASS} tabular-nums`}>{fmt(summary.requests)}</td>
+                        <td
+                          className={`${TD_CLASS} tabular-nums ${summary.errors > 0 ? 'text-bad' : ''}`}
+                        >
+                          {fmt(summary.errors)}
+                        </td>
+                        <td className={`${TD_CLASS} font-mono text-xs text-ink-dim`}>
+                          {summary.last_request_at ?? '—'}
+                        </td>
+                      </tr>
+                    ))}
+                    {Object.keys(info.traffic.agents).length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-6 text-center text-ink-dim">
+                          no proxied requests yet
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader title="Recent requests" subtitle="live, metadata only" />
+            <ul
+              className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs"
+              data-testid="gateway-recent-list"
+            >
+              {state.live.recentRequests
+                .slice()
+                .reverse()
+                .map((request, index) => (
+                  <li
+                    key={index}
+                    className="flex items-center gap-3 rounded-lg bg-panel-2 px-2.5 py-1.5"
+                  >
+                    <span className="text-ink-faint">{request.ts}</span>
+                    <span className="font-medium text-ink">{request.agent ?? '?'}</span>
+                    <span className="truncate text-ink-dim">{request.model}</span>
+                    <span className={`ml-auto ${request.status >= 400 ? 'text-bad' : 'text-ok'}`}>
+                      {request.status}
+                    </span>
+                    <span className="text-ink-faint">{request.latencyMs}ms</span>
+                  </li>
+                ))}
+              {state.live.recentRequests.length === 0 && (
+                <li className="py-4 text-center text-ink-dim">none since this page loaded</li>
+              )}
+            </ul>
+          </Card>
+        </div>
+      </div>
     </div>
   )
 }

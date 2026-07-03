@@ -5,7 +5,11 @@
  * callback receives the typed name — X-Confirm headers are built from it and
  * nowhere else. */
 
+import { AlertTriangle } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+
+import { Button } from './ui/Button'
+import { INPUT_MONO_CLASS } from './ui/Field'
 
 export interface ConfirmModalProps {
   open: boolean
@@ -36,7 +40,7 @@ export function ConfirmModal(props: ConfirmModalProps): ReactNode {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-[2px]"
       onKeyDown={(e) => {
         if (e.key === 'Escape') props.onCancel()
       }}
@@ -45,40 +49,41 @@ export function ConfirmModal(props: ConfirmModalProps): ReactNode {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-full max-w-md rounded-lg border border-edge bg-panel p-5 shadow-xl"
+        className="w-full max-w-md rounded-xl border border-edge bg-panel p-5 shadow-2xl"
       >
-        <h2 id={titleId} className="mb-2 text-lg font-semibold">
-          {props.title}
-        </h2>
-        <div className="mb-4 text-sm text-ink-dim">{props.body}</div>
+        <div className="mb-2 flex items-center gap-2.5">
+          {props.destructive && (
+            <span className="rounded-lg bg-bad/10 p-1.5 text-bad">
+              <AlertTriangle size={16} aria-hidden />
+            </span>
+          )}
+          <h2 id={titleId} className="text-base font-semibold">
+            {props.title}
+          </h2>
+        </div>
+        <div className="mb-4 text-sm leading-relaxed text-ink-dim">{props.body}</div>
         {props.typedName !== undefined && (
           <input
             ref={inputRef}
             data-testid="confirm-modal-name-input"
-            className="mb-4 w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+            className={`mb-4 ${INPUT_MONO_CLASS}`}
             placeholder={`type "${props.typedName}" to confirm`}
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
         )}
         <div className="flex justify-end gap-2">
-          <button
-            data-testid="confirm-modal-cancel-button"
-            className="rounded border border-edge px-3 py-1.5 text-sm hover:bg-surface"
-            onClick={props.onCancel}
-          >
+          <Button variant="outline" testId="confirm-modal-cancel-button" onClick={props.onCancel}>
             Cancel
-          </button>
-          <button
-            data-testid="confirm-modal-confirm-button"
+          </Button>
+          <Button
+            variant={props.destructive ? 'danger' : 'primary'}
+            testId="confirm-modal-confirm-button"
             disabled={!armed}
-            className={`rounded px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 ${
-              props.destructive ? 'bg-bad hover:opacity-90' : 'bg-accent-strong hover:opacity-90'
-            }`}
             onClick={() => armed && props.onConfirm(typed)}
           >
             {props.confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

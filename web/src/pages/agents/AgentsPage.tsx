@@ -1,6 +1,8 @@
-/** Agents list (S-U4-1): live badges from the reducer overlay, single-form
- * create panel with advanced collapse (Q3=A), inline job progress. */
+/** Agents (S-U4-1, redesign §6.2 Q3=B): searchable card grid with live badges
+ * from the reducer overlay and per-card quick actions; the create form moved
+ * into a right-hand Drawer (P5) keeping the same validation and testids. */
 
+import { Box, Container, Cpu, MessageSquare, Play, Plus, Square } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -8,7 +10,15 @@ import { ApiError } from '../../api/client'
 import { Collapsible } from '../../components/Collapsible'
 import { JobProgressCard } from '../../components/JobProgressCard'
 import { StatusBadge } from '../../components/StatusBadge'
+import { Button } from '../../components/ui/Button'
+import { Card } from '../../components/ui/Card'
+import { Drawer } from '../../components/ui/Drawer'
+import { EmptyState } from '../../components/ui/EmptyState'
+import { Field, INPUT_CLASS, INPUT_MONO_CLASS } from '../../components/ui/Field'
+import { PageHeader } from '../../components/ui/PageHeader'
+import { SearchInput } from '../../components/ui/SearchInput'
 import { validateAgentForm, type AgentFormValues, type FieldErrors } from '../../lib/forms'
+import type { AgentStatus } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
 
 const EMPTY_FORM: AgentFormValues = {
@@ -21,98 +31,156 @@ const EMPTY_FORM: AgentFormValues = {
 }
 
 export function AgentsPage(): ReactNode {
-  const { refetchAgents } = useApp()
+  const { state, refetchAgents } = useApp()
   const [creating, setCreating] = useState(false)
   const [jobIds, setJobIds] = useState<string[]>([])
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     void refetchAgents()
   }, [refetchAgents])
 
+  const visible = state.agents.filter((a) =>
+    a.name.toLowerCase().includes(query.trim().toLowerCase()),
+  )
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Agents</h1>
-        <button
-          data-testid="agents-create-toggle-button"
-          className="rounded bg-accent-strong px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
-          onClick={() => setCreating((v) => !v)}
-        >
-          {creating ? 'Close' : 'New agent'}
-        </button>
+    <div>
+      <PageHeader
+        title="Agents"
+        description="managed hermes agents behind the gateway"
+        actions={
+          <>
+            <SearchInput value={query} onChange={setQuery} placeholder="Filter by name…" />
+            <Button
+              variant="gradient"
+              testId="agents-create-toggle-button"
+              onClick={() => setCreating((v) => !v)}
+            >
+              <Plus size={14} aria-hidden /> New agent
+            </Button>
+          </>
+        }
+      />
+
+      <div className="space-y-4">
+        {jobIds.map((jobId) => (
+          <JobProgressCard key={jobId} jobId={jobId} />
+        ))}
+
+        {state.agents.length === 0 ? (
+          <div data-testid="agents-empty-note">
+            <EmptyState
+              icon={Box}
+              title="No agents yet"
+              description="Create one to get started — the daemon provisions the container, gateway and profile for you."
+              action={
+                <Button variant="gradient" onClick={() => setCreating(true)}>
+                  <Plus size={14} aria-hidden /> New agent
+                </Button>
+              }
+            />
+          </div>
+        ) : visible.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-edge-strong p-6 text-center text-sm text-ink-dim">
+            no agents match “{query}”
+          </p>
+        ) : (
+          <div
+            className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+            data-testid="agents-table"
+          >
+            {visible.map((agent) => (
+              <AgentCard key={agent.name} agent={agent} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {creating && (
+      <Drawer open={creating} title="New agent" onClose={() => setCreating(false)}>
         <CreateAgentPanel
           onJob={(jobId) => setJobIds((ids) => [...ids, jobId])}
           onClose={() => setCreating(false)}
         />
-      )}
-
-      {jobIds.map((jobId) => (
-        <JobProgressCard key={jobId} jobId={jobId} />
-      ))}
-
-      <AgentTable />
+      </Drawer>
     </div>
   )
 }
 
-function AgentTable(): ReactNode {
-  const { state } = useApp()
-  if (state.agents.length === 0) {
-    return (
-      <p
-        data-testid="agents-empty-note"
-        className="rounded border border-dashed border-edge p-6 text-center text-sm text-ink-dim"
-      >
-        No agents yet — create one to get started.
-      </p>
-    )
+function AgentCard(props: { agent: AgentStatus }): ReactNode {
+  const { agent } = props
+  const { client, state, toast } = useApp()
+  const [busy, setBusy] = useState<'start' | 'stop' | null>(null)
+  const live = state.live.agents[agent.name]
+  const process = live?.process ?? agent.process
+  const running = process === 'running'
+
+  // live overlay clears busy once the transition lands (WPT-7: no optimism)
+  useEffect(() => {
+    if (busy && live?.process) setBusy(null)
+  }, [busy, live?.process])
+
+  async function lifecycle(op: 'start' | 'stop'): Promise<void> {
+    setBusy(op)
+    try {
+      await (op === 'start' ? client.startAgent(agent.name) : client.stopAgent(agent.name))
+      toast('info', `${op} requested for ${agent.name}`)
+    } catch (error) {
+      setBusy(null)
+      toast('error', error instanceof ApiError ? error.message : `${op} failed`)
+    }
   }
+
   return (
-    <table className="w-full border-collapse text-sm" data-testid="agents-table">
-      <thead>
-        <tr className="border-b border-edge text-left text-xs uppercase tracking-wide text-ink-dim">
-          <th className="px-2 py-2">name</th>
-          <th className="px-2 py-2">desired</th>
-          <th className="px-2 py-2">process</th>
-          <th className="px-2 py-2">health</th>
-          <th className="px-2 py-2">container</th>
-        </tr>
-      </thead>
-      <tbody>
-        {state.agents.map((agent) => {
-          const live = state.live.agents[agent.name]
-          return (
-            <tr key={agent.name} className="border-b border-edge/60 hover:bg-panel">
-              <td className="px-2 py-2">
-                <Link
-                  data-testid={`agents-row-${agent.name}-link`}
-                  className="font-medium text-accent-strong hover:underline"
-                  to={`/agents/${encodeURIComponent(agent.name)}`}
-                >
-                  {agent.name}
-                </Link>
-              </td>
-              <td className="px-2 py-2">{agent.desired_state}</td>
-              <td className="px-2 py-2">
-                <StatusBadge
-                  value={live?.process ?? agent.process}
-                  testId={`agents-row-${agent.name}-process-badge`}
-                />
-              </td>
-              <td className="px-2 py-2">
-                <StatusBadge value={live?.health ?? agent.health} />
-              </td>
-              <td className="px-2 py-2">
-                <StatusBadge value={agent.container} />
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <Card className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-2">
+        <Link
+          data-testid={`agents-row-${agent.name}-link`}
+          className="min-w-0 truncate text-base font-semibold hover:text-accent"
+          to={`/agents/${encodeURIComponent(agent.name)}`}
+        >
+          {agent.name}
+        </Link>
+        <StatusBadge value={process} testId={`agents-row-${agent.name}-process-badge`} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-dim">
+        <span className="inline-flex items-center gap-1">
+          <Cpu size={12} aria-hidden /> {agent.health}
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <Container size={12} aria-hidden /> {agent.container}
+        </span>
+        <span className="text-ink-faint">desired: {agent.desired_state}</span>
+      </div>
+
+      <div className="mt-auto flex items-center gap-2 border-t border-edge pt-3">
+        {running ? (
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={busy !== null}
+            onClick={() => void lifecycle('stop')}
+          >
+            <Square size={12} aria-hidden /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            size="xs"
+            disabled={busy !== null}
+            onClick={() => void lifecycle('start')}
+          >
+            <Play size={12} aria-hidden /> {busy === 'start' ? 'Starting…' : 'Start'}
+          </Button>
+        )}
+        <Link to={`/chat/${encodeURIComponent(agent.name)}`}>
+          <Button variant="ghost" size="xs">
+            <MessageSquare size={12} aria-hidden /> Chat
+          </Button>
+        </Link>
+      </div>
+    </Card>
   )
 }
 
@@ -157,7 +225,7 @@ function CreateAgentPanel(props: {
   return (
     <form
       data-testid="agent-create-form"
-      className="space-y-3 rounded border border-edge bg-panel p-4"
+      className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault()
         void submit()
@@ -166,7 +234,7 @@ function CreateAgentPanel(props: {
       <Field label="name" error={errors.name}>
         <input
           data-testid="agent-create-name-input"
-          className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+          className={INPUT_CLASS}
           value={values.name}
           onChange={(e) => set('name', e.target.value)}
           placeholder="my-agent"
@@ -178,11 +246,11 @@ function CreateAgentPanel(props: {
         summary={<span className="text-sm text-ink-dim">Advanced options</span>}
         testId="agent-create-advanced-toggle"
       >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="docker image (blank = server default)" error={errors.docker_image}>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="docker image" hint="blank = server default" error={errors.docker_image}>
             <input
               data-testid="agent-create-image-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+              className={INPUT_MONO_CLASS}
               value={values.docker_image}
               onChange={(e) => set('docker_image', e.target.value)}
             />
@@ -190,7 +258,7 @@ function CreateAgentPanel(props: {
           <Field label="network" error={undefined}>
             <select
               data-testid="agent-create-network-select"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+              className={INPUT_CLASS}
               value={values.network_mode}
               onChange={(e) => set('network_mode', e.target.value)}
             >
@@ -202,7 +270,7 @@ function CreateAgentPanel(props: {
           <Field label="cpu" error={errors.cpu}>
             <input
               data-testid="agent-create-cpu-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+              className={INPUT_CLASS}
               value={values.cpu}
               onChange={(e) => set('cpu', e.target.value)}
               placeholder="e.g. 2"
@@ -211,7 +279,7 @@ function CreateAgentPanel(props: {
           <Field label="memory (MB)" error={errors.memory_mb}>
             <input
               data-testid="agent-create-memory-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+              className={INPUT_CLASS}
               value={values.memory_mb}
               onChange={(e) => set('memory_mb', e.target.value)}
               placeholder="≥256"
@@ -221,8 +289,8 @@ function CreateAgentPanel(props: {
             <Field label="persona (SOUL.md seed)" error={errors.persona}>
               <textarea
                 data-testid="agent-create-persona-input"
-                rows={4}
-                className="w-full rounded border border-edge bg-surface px-2 py-1.5 font-mono text-sm"
+                rows={5}
+                className={INPUT_MONO_CLASS}
                 value={values.persona}
                 onChange={(e) => set('persona', e.target.value)}
               />
@@ -232,29 +300,16 @@ function CreateAgentPanel(props: {
       </Collapsible>
 
       <div className="flex justify-end">
-        <button
-          data-testid="agent-create-submit-button"
+        <Button
+          variant="gradient"
+          size="md"
+          testId="agent-create-submit-button"
           type="submit"
           disabled={submitting}
-          className="rounded bg-accent-strong px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {submitting ? 'Creating…' : 'Create agent'}
-        </button>
+        </Button>
       </div>
     </form>
-  )
-}
-
-function Field(props: {
-  label: string
-  error: string | undefined
-  children: ReactNode
-}): ReactNode {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs font-medium text-ink-dim">{props.label}</span>
-      {props.children}
-      {props.error && <span className="mt-1 block text-xs text-bad">{props.error}</span>}
-    </label>
   )
 }

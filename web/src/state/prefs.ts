@@ -1,16 +1,18 @@
-/** UiPrefs (Q5=A): theme system/dark/light + thinking-collapsed default.
- * The only persisted client state besides the admin token (U4-REL-5). */
+/** UiPrefs (Q5 revised by redesign Q1=A): theme dark-by-default + thinking
+ * collapse + sidebar collapse. The only persisted client state besides the
+ * admin token (U4-REL-5). */
 
 export type ThemePref = 'system' | 'dark' | 'light'
 
 export interface UiPrefs {
   theme: ThemePref
   thinkingOpen: boolean
+  sidebarCollapsed: boolean
 }
 
 const PREFS_KEY = 'caduceus.prefs'
 
-export const defaultPrefs: UiPrefs = { theme: 'system', thinkingOpen: false }
+export const defaultPrefs: UiPrefs = { theme: 'dark', thinkingOpen: false, sidebarCollapsed: false }
 
 export function loadPrefs(): UiPrefs {
   try {
@@ -18,8 +20,12 @@ export function loadPrefs(): UiPrefs {
     if (!raw) return defaultPrefs
     const parsed = JSON.parse(raw) as Partial<UiPrefs>
     return {
-      theme: parsed.theme === 'dark' || parsed.theme === 'light' ? parsed.theme : 'system',
+      theme:
+        parsed.theme === 'dark' || parsed.theme === 'light' || parsed.theme === 'system'
+          ? parsed.theme
+          : 'dark',
       thinkingOpen: parsed.thinkingOpen === true,
+      sidebarCollapsed: parsed.sidebarCollapsed === true,
     }
   } catch {
     return defaultPrefs

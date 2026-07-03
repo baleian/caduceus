@@ -1,15 +1,28 @@
-/** Conversation view (S-U4-4, F6).
+/** Conversation view (S-U4-4, F6) — redesigned (§6.4, Q4=A): full-height
+ * three-pane layout (sessions | conversation | meta rail), markdown-rendered
+ * assistant turns, tool-call chips.
  *
  * W7 single source of truth: entering, switching or finishing a turn always
  * re-hydrates the transcript from GET api/sessions/{id}/messages — local
  * streaming buffers are render-only and are discarded on re-hydration.
  * The turn uses the U3-verified /v1/runs composition; the run state machine
  * is the pure lib/chatMachine (PU4-2) and this component merely executes the
- * actions it returns.
- */
+ * actions it returns. */
 
+import {
+  Check,
+  Cog,
+  Loader2,
+  Pencil,
+  Plus,
+  Send,
+  ShieldAlert,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { useBlocker, useParams } from 'react-router-dom'
+import { Link, useBlocker, useParams } from 'react-router-dom'
 
 import {
   createSession,
@@ -25,6 +38,10 @@ import {
 import { ApiError } from '../../api/client'
 import { Collapsible } from '../../components/Collapsible'
 import { ConfirmModal } from '../../components/ConfirmModal'
+import { Markdown } from '../../components/lazy'
+import { StatusBadge } from '../../components/StatusBadge'
+import { Button } from '../../components/ui/Button'
+import { INPUT_CLASS } from '../../components/ui/Field'
 import {
   APPROVAL_CHOICES,
   transition,
@@ -45,6 +62,17 @@ import { loadPrefs } from '../../state/prefs'
 const DELTA_LIMIT = 1_000_000
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return iso
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
 
 interface ToolCall {
   tool: string
@@ -70,7 +98,7 @@ const EMPTY_TURN: LiveTurn = {
 export function ChatView(): ReactNode {
   const params = useParams<{ name: string }>()
   const agent = params.name ?? ''
-  const { client, toast } = useApp()
+  const { client, state, toast, refetchAgents } = useApp()
 
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -133,6 +161,10 @@ export function ChatView(): ReactNode {
     },
     [hydrate],
   )
+
+  useEffect(() => {
+    void refetchAgents() // meta rail needs the agent's live status
+  }, [refetchAgents])
 
   useEffect(() => {
     let cancelled = false
@@ -357,45 +389,56 @@ export function ChatView(): ReactNode {
     }
   }
 
+  const agentLive = state.live.agents[agent]
+  const agentListed = state.agents.find((a) => a.name === agent)
+
   return (
-    <div className="flex gap-4" data-testid="chat-view">
-      <aside className="w-56 shrink-0 space-y-2">
-        <button
-          data-testid="chat-new-session-button"
-          className="w-full rounded bg-accent-strong px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
-          onClick={() => void newSession()}
-        >
-          New session
-        </button>
-        <ul className="space-y-1" data-testid="chat-session-list">
+    <div className="flex h-full" data-testid="chat-view">
+      {/* ── sessions pane ─────────────────────────────────────────────── */}
+      <aside className="flex w-72 shrink-0 flex-col border-r border-edge bg-panel">
+        <div className="border-b border-edge p-3">
+          <Button
+            variant="gradient"
+            testId="chat-new-session-button"
+            className="w-full"
+            onClick={() => void newSession()}
+          >
+            <Plus size={14} aria-hidden /> New session
+          </Button>
+        </div>
+        <ul className="flex-1 space-y-0.5 overflow-y-auto p-2" data-testid="chat-session-list">
           {sessions.map((session) => (
-            <li key={session.id} className="group">
+            <li key={session.id} className="group relative">
               <button
                 data-testid={`chat-session-${session.id}-button`}
                 onClick={() => void selectSession(session.id)}
-                className={`w-full rounded px-2 py-1.5 text-left text-sm ${
-                  session.id === activeId ? 'bg-accent/15 text-accent-strong' : 'hover:bg-panel'
+                className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  session.id === activeId ? 'bg-accent/12 text-accent' : 'text-ink hover:bg-panel-2'
                 }`}
               >
-                <span className="block truncate">{session.title || session.id}</span>
-                <span className="block truncate text-xs text-ink-dim">
-                  {session.last_active ?? session.started_at ?? ''}
+                <span className="block truncate pr-10 font-medium">
+                  {session.title || session.id}
+                </span>
+                <span className="block truncate text-xs text-ink-faint">
+                  {timeAgo(session.last_active ?? session.started_at)}
                 </span>
               </button>
-              <div className="hidden justify-end gap-2 px-2 text-xs text-ink-dim group-hover:flex">
+              <div className="absolute top-1/2 right-2 hidden -translate-y-1/2 gap-1 group-hover:flex">
                 <button
                   data-testid={`chat-session-${session.id}-rename-button`}
-                  className="hover:text-ink"
+                  className="rounded p-1 text-ink-faint hover:bg-panel hover:text-ink"
+                  title="rename"
                   onClick={() => setRenameTarget({ id: session.id, title: session.title ?? '' })}
                 >
-                  rename
+                  <Pencil size={12} aria-hidden />
                 </button>
                 <button
                   data-testid={`chat-session-${session.id}-delete-button`}
-                  className="hover:text-bad"
+                  className="rounded p-1 text-ink-faint hover:bg-panel hover:text-bad"
+                  title="delete"
                   onClick={() => setDeleteTarget(session)}
                 >
-                  delete
+                  <Trash2 size={12} aria-hidden />
                 </button>
               </div>
             </li>
@@ -403,95 +446,161 @@ export function ChatView(): ReactNode {
         </ul>
       </aside>
 
-      <section className="flex min-h-[70vh] flex-1 flex-col rounded border border-edge bg-panel">
-        <header className="border-b border-edge px-4 py-2 text-sm text-ink-dim">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              chat with <span className="font-medium text-ink">{agent}</span>
-              {activeId && <span className="ml-2 font-mono text-xs">session {activeId}</span>}
-            </div>
-            <SessionUsage session={activeSession} />
+      {/* ── conversation ──────────────────────────────────────────────── */}
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-3 border-b border-edge bg-panel px-6 py-3">
+          <div className="min-w-0 text-sm text-ink-dim">
+            chat with{' '}
+            <Link
+              to={`/agents/${encodeURIComponent(agent)}`}
+              className="font-semibold text-ink hover:text-accent"
+            >
+              {agent}
+            </Link>
+            {activeId && (
+              <span className="ml-2 hidden font-mono text-xs text-ink-faint md:inline">
+                session {activeId}
+              </span>
+            )}
           </div>
+          <SessionUsage session={activeSession} />
         </header>
 
-        <div className="flex-1 space-y-3 overflow-y-auto p-4" data-testid="chat-transcript">
-          {loadError && <p className="text-sm text-bad">{loadError}</p>}
-          {!loadError && !activeId && (
-            <p className="text-sm text-ink-dim">
-              No sessions yet — just type below; a session is created automatically.
-            </p>
-          )}
-          {transcript.map((item, index) => (
-            <TranscriptBlock key={index} item={item} />
-          ))}
-          <LiveTurnBlock turn={turn} streaming={streaming} />
-          <div ref={bottomRef} />
+        <div className="flex-1 overflow-y-auto" data-testid="chat-transcript">
+          <div className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
+            {loadError && (
+              <p className="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{loadError}</p>
+            )}
+            {!loadError && !activeId && (
+              <div className="py-16 text-center">
+                <p className="text-sm font-medium text-ink">Start a conversation</p>
+                <p className="mt-1 text-xs text-ink-dim">
+                  Just type below — a session is created automatically.
+                </p>
+              </div>
+            )}
+            {transcript.map((item, index) => (
+              <TranscriptBlock key={index} item={item} />
+            ))}
+            <LiveTurnBlock turn={turn} streaming={streaming} />
+            <div ref={bottomRef} />
+          </div>
         </div>
 
         {approval && (
-          <div
-            data-testid="chat-approval-card"
-            className="mx-4 mb-2 rounded border border-warn/60 bg-warn/10 p-3 text-sm"
-          >
-            <p className="mb-2 font-medium">⚠ approval requested: {approval.summary}</p>
-            <div className="flex gap-2">
-              {APPROVAL_CHOICES.map((choice) => (
-                <button
-                  key={choice}
-                  data-testid={`chat-approval-${choice}-button`}
-                  className={`rounded px-3 py-1 text-xs font-medium ${
-                    choice === 'deny'
-                      ? 'border border-edge text-ink-dim hover:text-ink'
-                      : 'bg-accent-strong text-white hover:opacity-90'
-                  }`}
-                  onClick={() => answerApproval(choice)}
-                >
-                  {choice}
-                </button>
-              ))}
+          <div className="border-t border-edge bg-panel px-6 py-3">
+            <div
+              data-testid="chat-approval-card"
+              className="mx-auto max-w-3xl rounded-xl border border-warn/50 bg-warn/10 p-3.5 text-sm"
+            >
+              <p className="mb-2.5 flex items-start gap-2 font-medium">
+                <ShieldAlert size={16} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+                approval requested: <span className="font-mono text-xs">{approval.summary}</span>
+              </p>
+              <div className="flex gap-2">
+                {APPROVAL_CHOICES.map((choice) => (
+                  <Button
+                    key={choice}
+                    size="xs"
+                    variant={choice === 'deny' ? 'outline' : 'primary'}
+                    testId={`chat-approval-${choice}-button`}
+                    onClick={() => answerApproval(choice)}
+                  >
+                    {choice}
+                  </Button>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
-        <footer className="flex gap-2 border-t border-edge p-3">
-          <textarea
-            data-testid="chat-composer-input"
-            rows={2}
-            className="flex-1 resize-none rounded border border-edge bg-surface px-3 py-2 text-sm"
-            placeholder={
-              streaming ? 'turn in progress…' : 'message (Enter to send, Shift+Enter for newline)'
-            }
-            value={input}
-            disabled={streaming}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void submit()
+        <footer className="border-t border-edge bg-panel px-6 py-4">
+          <div className="mx-auto flex max-w-3xl items-end gap-2">
+            <textarea
+              data-testid="chat-composer-input"
+              rows={2}
+              className={`${INPUT_CLASS} flex-1 resize-none`}
+              placeholder={
+                streaming ? 'turn in progress…' : 'message (Enter to send, Shift+Enter for newline)'
               }
-            }}
-          />
-          {streaming ? (
-            <button
-              data-testid="chat-stop-button"
-              disabled={machineUi === 'stopping'}
-              className="rounded bg-bad px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              onClick={interrupt}
-            >
-              {machineUi === 'stopping' ? 'Stopping…' : 'Stop'}
-            </button>
-          ) : (
-            <button
-              data-testid="chat-send-button"
-              disabled={!input.trim()}
-              className="rounded bg-accent-strong px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-              onClick={() => void submit()}
-            >
-              Send
-            </button>
-          )}
+              value={input}
+              disabled={streaming}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void submit()
+                }
+              }}
+            />
+            {streaming ? (
+              <Button
+                variant="danger"
+                size="md"
+                testId="chat-stop-button"
+                disabled={machineUi === 'stopping'}
+                onClick={interrupt}
+              >
+                {machineUi === 'stopping' ? (
+                  <Loader2 size={14} className="animate-spin" aria-hidden />
+                ) : (
+                  <Square size={14} aria-hidden />
+                )}
+                {machineUi === 'stopping' ? 'Stopping…' : 'Stop'}
+              </Button>
+            ) : (
+              <Button
+                variant="gradient"
+                size="md"
+                testId="chat-send-button"
+                disabled={!input.trim()}
+                onClick={() => void submit()}
+              >
+                <Send size={14} aria-hidden /> Send
+              </Button>
+            )}
+          </div>
         </footer>
       </section>
+
+      {/* ── meta rail (xl+) ───────────────────────────────────────────── */}
+      <aside className="hidden w-64 shrink-0 space-y-5 overflow-y-auto border-l border-edge bg-panel p-4 2xl:block">
+        <div>
+          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">Agent</h3>
+          <div className="flex flex-wrap gap-1.5">
+            <StatusBadge value={agentLive?.process ?? agentListed?.process ?? 'unknown'} />
+            <StatusBadge value={agentLive?.health ?? agentListed?.health ?? 'unknown'} />
+          </div>
+        </div>
+        <div>
+          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">
+            Session usage
+          </h3>
+          {activeSession ? (
+            <dl className="space-y-1.5 text-sm">
+              <UsageRowItem label="input" value={activeSession.input_tokens} />
+              <UsageRowItem label="cache read" value={activeSession.cache_read_tokens} />
+              <UsageRowItem label="output" value={activeSession.output_tokens} />
+              {activeSession.estimated_cost_usd != null && activeSession.estimated_cost_usd > 0 && (
+                <div className="flex justify-between border-t border-edge pt-1.5">
+                  <dt className="text-ink-dim">est. cost</dt>
+                  <dd className="font-mono text-xs">
+                    ${activeSession.estimated_cost_usd.toFixed(4)}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          ) : (
+            <p className="text-xs text-ink-faint">no active session</p>
+          )}
+        </div>
+        <div>
+          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">
+            Sessions
+          </h3>
+          <p className="text-sm text-ink-dim">{sessions.length} total</p>
+        </div>
+      </aside>
 
       <ConfirmModal
         open={deleteTarget !== null}
@@ -510,7 +619,7 @@ export function ChatView(): ReactNode {
           body={
             <input
               data-testid="chat-rename-input"
-              className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-sm"
+              className={INPUT_CLASS}
               value={renameTarget.title}
               onChange={(e) => setRenameTarget({ id: renameTarget.id, title: e.target.value })}
               autoFocus
@@ -534,9 +643,18 @@ export function ChatView(): ReactNode {
   )
 }
 
-/** Fixed session-usage readout — hermes-native cumulative counts for the active
- * session (cache read split out). Hidden until a session with usage exists;
- * updates whenever the session list refreshes (i.e. after each turn). */
+function UsageRowItem(props: { label: string; value: number | null | undefined }): ReactNode {
+  return (
+    <div className="flex justify-between">
+      <dt className="text-ink-dim">{props.label}</dt>
+      <dd className="font-mono text-xs tabular-nums">{fmt(props.value ?? 0)}</dd>
+    </div>
+  )
+}
+
+/** Compact session-usage readout in the conversation header — hermes-native
+ * cumulative counts (cache read split out). Updates whenever the session list
+ * refreshes (i.e. after each turn). */
 function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
   const { session } = props
   const input = session?.input_tokens ?? null
@@ -545,17 +663,46 @@ function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
   const cost = session?.estimated_cost_usd ?? null
   if (input == null && output == null) {
     return (
-      <span className="text-xs text-ink-dim" data-testid="chat-session-usage">
+      <span className="shrink-0 text-xs text-ink-faint" data-testid="chat-session-usage">
         session usage —
       </span>
     )
   }
   return (
-    <span className="text-xs text-ink-dim" data-testid="chat-session-usage">
+    <span className="shrink-0 text-xs text-ink-dim" data-testid="chat-session-usage">
       session · in {fmt(input ?? 0)}
       {cacheRead > 0 && <> (cache {fmt(cacheRead)})</>} / out {fmt(output ?? 0)}
       {cost != null && cost > 0 && <> · ${cost.toFixed(4)}</>}
     </span>
+  )
+}
+
+function ToolChip(props: {
+  name: string
+  detail?: string
+  state: 'running' | 'ok' | 'failed' | 'plain'
+  duration?: string
+}): ReactNode {
+  const icon =
+    props.state === 'running' ? (
+      <Loader2 size={11} className="animate-spin text-accent" aria-hidden />
+    ) : props.state === 'ok' ? (
+      <Check size={11} className="text-ok" aria-hidden />
+    ) : props.state === 'failed' ? (
+      <X size={11} className="text-bad" aria-hidden />
+    ) : (
+      <Cog size={11} className="text-ink-faint" aria-hidden />
+    )
+  return (
+    <div
+      className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-edge bg-panel-2 px-2 py-1 font-mono text-xs text-ink-dim"
+      data-testid="chat-tool-call"
+    >
+      {icon}
+      <span className="font-medium text-ink">{props.name}</span>
+      {props.detail && <span className="truncate">{props.detail}</span>}
+      {props.duration && <span className="text-ink-faint">({props.duration}s)</span>}
+    </div>
   )
 }
 
@@ -564,7 +711,7 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
   const thinkingOpen = loadPrefs().thinkingOpen
   if (item.kind === 'user') {
     return (
-      <div className="ml-auto max-w-[80%] rounded-lg bg-accent/15 px-3 py-2 text-sm whitespace-pre-wrap">
+      <div className="ml-auto w-fit max-w-[80%] rounded-2xl rounded-br-md bg-accent/15 px-4 py-2.5 text-sm whitespace-pre-wrap">
         {item.text}
       </div>
     )
@@ -581,31 +728,33 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
             defaultOpen={thinkingOpen}
             testId="chat-thinking-toggle"
           >
-            <p className="whitespace-pre-wrap text-xs text-ink-dim">{redact(item.reasoning)}</p>
+            <p className="text-xs whitespace-pre-wrap text-ink-dim">{redact(item.reasoning)}</p>
           </Collapsible>
         )}
-        {item.toolCalls.map((call, index) => (
-          <div key={index} className="font-mono text-xs text-ink-dim" data-testid="chat-tool-call">
-            <span className="text-ink-dim">⚙</span> {call.name}{' '}
-            {redact(call.args, 200).slice(0, 120)}
-          </div>
-        ))}
-        {item.text.trim() && (
-          <div className="max-w-[85%] rounded-lg bg-surface px-3 py-2 text-sm whitespace-pre-wrap">
-            {redact(item.text, DELTA_LIMIT)}
+        {item.toolCalls.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {item.toolCalls.map((call, index) => (
+              <ToolChip
+                key={index}
+                name={call.name}
+                detail={redact(call.args, 200).slice(0, 80)}
+                state="plain"
+              />
+            ))}
           </div>
         )}
+        {item.text.trim() && <Markdown text={redact(item.text, DELTA_LIMIT)} />}
       </div>
     )
   }
   if (item.kind === 'tool') {
-    const label = item.toolName ? `⚙ ${item.toolName} result` : '⚙ tool result'
+    const label = item.toolName ? `${item.toolName} result` : 'tool result'
     return (
       <Collapsible
-        summary={<span className="font-mono text-xs text-ink-dim">{label}</span>}
+        summary={<span className="font-mono text-xs text-ink-dim">⚙ {label}</span>}
         testId="chat-tool-result"
       >
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs text-ink-dim">
+        <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap text-ink-dim">
           {toolFailureSummary(item.text, 2000) || '(empty result)'}
         </pre>
       </Collapsible>
@@ -629,29 +778,31 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
   return (
     <div className="space-y-2" data-testid="chat-live-turn">
       {turn.userText && (
-        <div className="ml-auto max-w-[80%] rounded-lg bg-accent/15 px-3 py-2 text-sm whitespace-pre-wrap">
+        <div className="ml-auto w-fit max-w-[80%] rounded-2xl rounded-br-md bg-accent/15 px-4 py-2.5 text-sm whitespace-pre-wrap">
           {turn.userText}
         </div>
       )}
-      {turn.tools.map((tool, index) => (
-        <div key={index} className="font-mono text-xs text-ink-dim" data-testid="chat-tool-call">
-          <span
-            className={tool.error === true ? 'text-bad' : tool.error === false ? 'text-ok' : ''}
-          >
-            {tool.error === null ? '⚙' : tool.error ? '✗' : '✓'}
-          </span>{' '}
-          {tool.tool} {tool.preview}
-          {tool.duration && ` (${tool.duration}s)`}
+      {turn.tools.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {turn.tools.map((tool, index) => (
+            <ToolChip
+              key={index}
+              name={tool.tool}
+              detail={tool.preview}
+              state={tool.error === null ? 'running' : tool.error ? 'failed' : 'ok'}
+              duration={tool.duration || undefined}
+            />
+          ))}
         </div>
-      ))}
+      )}
       {turn.assistantText && (
-        <div className="max-w-[85%] rounded-lg bg-surface px-3 py-2 text-sm whitespace-pre-wrap">
-          {turn.assistantText}
-          {streaming && <span className="animate-pulse">▍</span>}
+        <div className="text-sm">
+          <Markdown text={turn.assistantText} />
+          {streaming && <span className="animate-pulse text-accent">▍</span>}
         </div>
       )}
       {turn.notes.map((note, index) => (
-        <p key={index} className="text-xs italic text-ink-dim" data-testid="chat-system-note">
+        <p key={index} className="text-xs text-ink-dim italic" data-testid="chat-system-note">
           {note}
         </p>
       ))}

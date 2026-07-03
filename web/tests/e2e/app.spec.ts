@@ -16,14 +16,17 @@ test('rejects a wrong token and locks the app (W3)', async ({ page }) => {
 })
 
 test('accepts the fragment token and scrubs it from the URL (Q1=A)', async ({ page }) => {
+  // redesign Q2=A: `/` lands on the dashboard
   await page.goto(`/#token=${TOKEN}`)
-  await expect(page.getByTestId('agents-empty-note')).toBeVisible()
+  await expect(page.getByTestId('dashboard-page')).toBeVisible()
   expect(page.url()).not.toContain(TOKEN)
   await expect(page.getByTestId('shell-connection-badge')).toContainText('connected')
+  await page.getByTestId('nav-agents-link').click()
+  await expect(page.getByTestId('agents-empty-note')).toBeVisible()
 })
 
 test('creates an agent through the form and watches the job to done (S-U4-1)', async ({ page }) => {
-  await page.goto(`/#token=${TOKEN}`)
+  await page.goto(`/agents#token=${TOKEN}`)
   await page.getByTestId('agents-create-toggle-button').click()
   await page.getByTestId('agent-create-name-input').fill(AGENT)
   await page.getByTestId('agent-create-advanced-toggle').click()
@@ -40,7 +43,7 @@ test('creates an agent through the form and watches the job to done (S-U4-1)', a
 })
 
 test('client-side validation mirrors the server name rule (W4)', async ({ page }) => {
-  await page.goto(`/#token=${TOKEN}`)
+  await page.goto(`/agents#token=${TOKEN}`)
   await page.getByTestId('agents-create-toggle-button').click()
   await page.getByTestId('agent-create-name-input').fill('Invalid Name!')
   await page.getByTestId('agent-create-submit-button').click()

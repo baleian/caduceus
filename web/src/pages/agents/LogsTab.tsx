@@ -2,8 +2,10 @@
  * 1.5s poll deduped through lib/tail (PU4-6); a lost overlap renders a gap
  * marker — never a silent skip. */
 
+import { RefreshCw } from 'lucide-react'
 import { useCallback, useRef, useState, type ReactNode } from 'react'
 
+import { Button } from '../../components/ui/Button'
 import { redact } from '../../lib/redact'
 import { advance } from '../../lib/tail'
 import { useApp } from '../../state/AppStore'
@@ -54,28 +56,30 @@ export function LogsTab(props: { agent: string }): ReactNode {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-3">
-        <button
-          data-testid="logs-refresh-button"
-          className="rounded border border-edge px-3 py-1 text-sm hover:bg-panel"
+        <Button
+          variant="outline"
+          testId="logs-refresh-button"
           onClick={() => void fetchSnapshot('replace')}
         >
-          Refresh
-        </button>
+          <RefreshCw size={13} aria-hidden /> Refresh
+        </Button>
         <label className="flex items-center gap-1.5 text-sm text-ink-dim">
           <input
             data-testid="logs-follow-toggle"
             type="checkbox"
+            className="accent-accent"
             checked={follow}
             onChange={(e) => setFollow(e.target.checked)}
           />
           follow
+          {follow && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" aria-hidden />}
         </label>
         {error && <span className="text-sm text-bad">{error}</span>}
       </div>
       <pre
         ref={scrollRef}
         data-testid="logs-output"
-        className="h-96 overflow-auto rounded border border-edge bg-panel p-3 font-mono text-xs leading-5"
+        className="h-[70vh] overflow-auto rounded-xl border border-edge bg-panel p-4 font-mono text-xs leading-5 text-ink-dim"
       >
         {lines.length === 0
           ? '(no log lines — press Refresh)'
