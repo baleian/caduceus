@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U4 Web UI — Code Generation Part 1 (계획 수립)
-- **Next Stage**: U4 Code Generation Part 2 (생성) → Build and Test
-- **Status**: U4 FD/NFR Requirements/NFR Design 전부 APPROVED (2026-07-03). Infrastructure Design 스킵 확정. 설계 문서 커밋 후 코드 생성 계획 수립 중
+- **Current Stage**: U4 Web UI — Code Generation 완료 (승인 게이트)
+- **Next Stage**: Build and Test (전 유닛)
+- **Status**: U4 14단계 전부 완료 — SPA 45파일, 서버측 5파일 수정(E2E 발견 U2 결함 2건 포함), 검증 Python 472 / Web 46 / Playwright E2E 14/14, 번들 85.5KB gzip. code-summary.md 편차 5건 기록. 승인 대기
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

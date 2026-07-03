@@ -8,6 +8,7 @@ only public path.
 from __future__ import annotations
 
 import hmac
+import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -23,7 +24,11 @@ __all__ = [
 ]
 
 _PUBLIC_PATHS = frozenset({"/healthz"})
-_PROTECTED_PREFIXES = ("/api/", "/agents/")
+# /api/* plus the agent api_server relay. Plain /agents/{name} (no /api
+# segment) is a browser SPA route — it must serve the public index.html
+# shell so deep links survive a refresh (U4; the shell carries no data,
+# every /api call from it is still token-gated).
+_AGENT_RELAY_RE = re.compile(r"^/agents/[^/]+/api(?:/|$)")
 
 
 class AdminAuth:
@@ -55,7 +60,9 @@ class AdminAuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         path = request.url.path
-        protected = path.startswith(_PROTECTED_PREFIXES) and path not in _PUBLIC_PATHS
+        protected = (
+            path.startswith("/api/") or bool(_AGENT_RELAY_RE.match(path))
+        ) and path not in _PUBLIC_PATHS
         if protected and not self._auth.verify_request(request):
             # A3: undifferentiated 401
             return JSONResponse(status_code=401, content={"error": "unauthorized"})

@@ -40,3 +40,10 @@ Thumbs.db
 
 # ===== aidlc artifacts =====
 aidlc-docs/audit.md
+
+# ===== web (U4 SPA) =====
+web/node_modules/
+web/test-results/
+web/playwright-report/
+# built SPA (caduceus/web_dist) is COMMITTED by design — source installs
+# work without Node (tech-stack-decisions.md §4); do not ignore it

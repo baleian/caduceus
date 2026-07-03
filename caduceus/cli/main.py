@@ -127,17 +127,34 @@ def doctor(ctx: typer.Context) -> None:
 
 @app.command()
 def ui(ctx: typer.Context) -> None:
-    """Open the web UI in the default browser (token never placed in the URL)."""
+    """Open the web UI in the default browser.
+
+    The admin token rides in the URL *fragment* (FD Q1=A): fragments are never
+    sent in the HTTP request, so no server/proxy log sees it; the SPA stores
+    it and immediately scrubs the address bar. Without a local token file the
+    URL is opened bare and the SPA shows its manual token screen.
+    """
+    from urllib.parse import quote
+
     from caduceus.cli.bootstrap import open_ui
     from caduceus.core.config import CaduceusConfigStore
     from caduceus.core.ports import RealFileStore
+    from caduceus.core.tokens import ADMIN_TOKEN_FILE
 
     state = get_state(ctx)
-    url = "http://127.0.0.1:4285"
+    base = "http://127.0.0.1:4285"
     store = CaduceusConfigStore(state.home / "config.yaml", RealFileStore())
     if store.exists():
         listen = store.load().listen
-        url = f"http://{listen.host}:{listen.port}"
+        base = f"http://{listen.host}:{listen.port}"
+    url = base
+    token_path = state.home / ADMIN_TOKEN_FILE
+    if token_path.is_file():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if token:
+            url = f"{base}/#token={quote(token, safe='')}"
+    # the printed URL includes the fragment (user decision 2026-07-03) — the
+    # link must work by copy-paste even when the opener drops the fragment
     finish(open_ui(get_renderer(ctx), url))
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import webbrowser
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,23 +188,62 @@ def render_doctor(renderer: Renderer, rows: list[CheckRow]) -> ExitCode:
 # -- ui ---------------------------------------------------------------------------
 
 
-def open_ui(renderer: Renderer, url: str) -> ExitCode:
-    """Browser fallback chain (U3-PORT-4); the URL never carries a token."""
+def _is_wsl() -> bool:
     try:
-        if webbrowser.open(url):
-            renderer.progress(f"opened {url}")
-            return ExitCode.OK
-    except Exception:  # noqa: BLE001,S110 - fall through to wslview/plain print
-        pass
-    wslview = shutil.which("wslview")
-    if wslview:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        return False
+
+
+def _gui_openers() -> list[list[str]]:
+    """GUI-only opener commands, best first. Never the python ``webbrowser``
+    module: with no GUI browser it falls back to console browsers (w3m/lynx),
+    which take over the terminal and block — a blank hung screen (U4 fix)."""
+    candidates: list[list[str]] = []
+    if _is_wsl():
+        for name in ("wslview", "explorer.exe"):
+            path = shutil.which(name)
+            if path:
+                candidates.append([path])
+    if sys.platform == "darwin":
+        candidates.append(["open"])
+    elif os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        path = shutil.which("xdg-open")
+        if path:
+            candidates.append([path])
+    return candidates
+
+
+def open_ui(renderer: Renderer, url: str) -> ExitCode:
+    """Open the web UI without ever blocking the terminal.
+
+    The full URL — including the ``#token=`` fragment — is printed FIRST so
+    the link is never hostage to a browser attempt and stays clickable even
+    when an opener (e.g. explorer.exe) drops the fragment. Printing the
+    admin token here is a **user-approved exception** to the redact gate
+    (decision 2026-07-03): the token is hex, so ``data_text`` would mask the
+    fragment; it is the operator's own credential in their own terminal —
+    the same trust boundary as ``cat ~/.caduceus/admin.token``.
+    """
+    from rich.text import Text
+
+    renderer.out.print(Text(url))  # deliberate bypass of the redact gate (see above)
+    for argv in _gui_openers():
         try:
-            subprocess.Popen([wslview, url])  # noqa: S603
-            renderer.progress(f"opened {url}")
+            subprocess.Popen(  # noqa: S603
+                [*argv, url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            renderer.progress(f"opening in browser via {Path(argv[0]).name}")
             return ExitCode.OK
         except OSError:
-            pass
-    renderer.data_text(url)  # last resort: print it
+            continue
+    renderer.progress(
+        "no browser opener found — open the URL above yourself"
+        " (the page will ask for the admin token: ~/.caduceus/admin.token)"
+    )
     return ExitCode.OK
 
 

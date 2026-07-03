@@ -17,7 +17,8 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from caduceus import __version__
 from caduceus.control.agent_proxy import build_agent_proxy_router
@@ -55,6 +56,22 @@ from caduceus.proxy.upstream import UpstreamClient
 logger = logging.getLogger(__name__)
 
 DEFAULT_CADUCEUS_HOME = Path.home() / ".caduceus"
+DEFAULT_WEB_DIST = Path(__file__).parent / "web_dist"
+
+# SECURITY-04 (U4-SEC-1): applied to every response. The SPA is fully
+# self-contained (no CDN), so 'self' covers all legitimate loads; ws:/wss:
+# admits the same-origin event socket; 'unsafe-inline' styles are required
+# by React inline style attributes and carry no script risk.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": (
+        "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+ASSET_CACHE = "public, max-age=31536000, immutable"  # hashed filenames only
 
 
 @dataclass
@@ -118,6 +135,7 @@ def build_daemon(
     hermes_home: Path,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     agent_transport: httpx.AsyncBaseTransport | None = None,
+    web_dist: Path | None = None,
 ) -> Daemon:
     events = EventBus()
     holder = ConfigHolder(config)  # live view for provisioner/reconciler/api
@@ -174,16 +192,26 @@ def build_daemon(
 
     app = FastAPI(title="caduceus", version=__version__, docs_url=None, redoc_url=None)
 
+    # auth first, hardening second: add_middleware PREPENDS, so hardening ends
+    # up outermost and stamps security headers on every response — including
+    # the 401s the auth gate short-circuits (U4-SEC-1).
+    app.add_middleware(AdminAuthMiddleware, auth=auth)
+
     @app.middleware("http")
     async def hardening(request: Request, call_next):  # type: ignore[no-untyped-def]
         length = request.headers.get("content-length")
         if length and int(length) > MAX_BODY_BYTES:  # B1
             return JSONResponse(status_code=413, content={"error": "request too large"})
         response: Response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        for name, value in SECURITY_HEADERS.items():  # U4-SEC-1
+            response.headers[name] = value
+        # W5 cache policy: only hashed static assets are cacheable; API
+        # responses and index.html (the SPA shell) are always revalidated.
+        if request.url.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = ASSET_CACHE
+        else:
+            response.headers["Cache-Control"] = "no-store"
         return response
-
-    app.add_middleware(AdminAuthMiddleware, auth=auth)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:  # shallow liveness (public)
@@ -207,6 +235,29 @@ def build_daemon(
         )
     )
     app.include_router(build_agent_proxy_router(registry, agent_client))
+
+    # -- SPA serving (C9/F11) — registered last so every API route wins first.
+    dist = web_dist if web_dist is not None else DEFAULT_WEB_DIST
+    assets_dir = dist / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    index_file = dist / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> Response:
+        # Unknown API paths must 404 as JSON, never as HTML (defensive: these
+        # namespaces normally match their routers before this catch-all).
+        if full_path.startswith(("api/", "v1/", "assets/")) or full_path in ("api", "v1"):
+            return JSONResponse(status_code=404, content={"error": "not found"})
+        if index_file.is_file():
+            # Browser navigation (BrowserRouter deep links) → the SPA shell.
+            # Only ever this one file is served here — no path is resolved
+            # from the request, so traversal is structurally impossible.
+            return FileResponse(index_file, media_type="text/html")
+        return JSONResponse(
+            status_code=404,
+            content={"error": "web UI not built (missing web_dist/index.html)"},
+        )
 
     return Daemon(
         app=app, config=config, registry=registry, resolver=resolver,

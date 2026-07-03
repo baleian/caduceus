@@ -124,6 +124,10 @@ class Provisioner:
             # must exist before the first gateway boot captures its env
             # snapshot from a login shell.
             self._hermes.seed_sandbox_profile(profile)
+            # F7: the spec's persona seeds SOUL.md (was silently dropped
+            # before U4's browser E2E exercised the create-with-persona path)
+            if spec.persona is not None:
+                self._hermes.write_soul(profile, spec.persona)
 
         async def env_write() -> None:
             self._hermes.write_api_server_env(

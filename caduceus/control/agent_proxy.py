@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 ALLOWED_PREFIXES = ("v1/", "api/sessions", "health")
 _SKIP_REQUEST_HEADERS = {
     "host", "authorization", "x-caduceus-token", "content-length", "connection",
+    # browser-context headers must not leak through the relay: hermes
+    # api_server's CORS middleware 403s on any non-allowlisted Origin. The
+    # relay is an authenticated server-side client (single-origin design,
+    # C5) — exactly like the CLI, which sends none of these.
+    "origin", "referer", "cookie",
 }
 _SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "connection"}
 
