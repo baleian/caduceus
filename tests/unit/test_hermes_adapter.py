@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,66 @@ class TestProfileLifecycle:
         files.mkdir(PROFILE_DIR)
         await adapter.delete_profile(PROFILE)
         assert runner.calls == [["hermes", "profile", "delete", PROFILE, "--yes"]]
+
+    async def test_delete_reclaims_root_owned_dir_then_retries(self) -> None:
+        adapter, runner, files = make_adapter()
+        files.mkdir(PROFILE_DIR)
+        delete_calls = 0
+
+        async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
+            nonlocal delete_calls
+            runner.calls.append(list(argv))
+            if argv[:3] == ["hermes", "profile", "delete"]:
+                delete_calls += 1
+                if delete_calls == 1:  # root-owned artifacts block rmtree
+                    return CommandResult(1, "", "PermissionError: [Errno 13]")
+                return CommandResult(0, "", "")
+            return CommandResult(0, "", "")  # docker run chown
+
+        runner.run = run  # type: ignore[method-assign]
+        await adapter.delete_profile(PROFILE, image="ubuntu:24.04")
+
+        assert delete_calls == 2  # failed once, retried after reclaim
+        chown = [c for c in runner.calls if c[:2] == ["docker", "run"]]
+        assert len(chown) == 1
+        assert "ubuntu:24.04" in chown[0]
+        assert f"{PROFILE_DIR}:/target" in chown[0]
+        assert chown[0][-4:] == ["chown", "-R", f"{os.getuid()}:{os.getgid()}", "/target"]
+
+    async def test_delete_raises_when_reclaim_does_not_help(self) -> None:
+        adapter, runner, files = make_adapter()
+        files.mkdir(PROFILE_DIR)
+
+        async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
+            runner.calls.append(list(argv))
+            if argv[:3] == ["hermes", "profile", "delete"]:
+                return CommandResult(1, "", "PermissionError deadbeefdeadbeefdeadbeefdeadbeef")
+            return CommandResult(0, "", "")  # chown "succeeds" but dir still stuck
+
+        runner.run = run  # type: ignore[method-assign]
+        with pytest.raises(HermesError) as exc:
+            await adapter.delete_profile(PROFILE, image="ubuntu:24.04")
+        assert "deadbeef" not in str(exc.value)  # stderr redacted
+        assert sum(1 for c in runner.calls if c[:3] == ["hermes", "profile", "delete"]) == 2
+
+    async def test_delete_without_image_raises_without_reclaim(self) -> None:
+        adapter, runner, files = make_adapter()
+        files.mkdir(PROFILE_DIR)
+        runner.on("hermes", "profile", "delete", result=CommandResult(1, "", "boom"))
+        with pytest.raises(HermesError):
+            await adapter.delete_profile(PROFILE)  # no image → nothing to reclaim with
+        assert not any(c[:2] == ["docker", "run"] for c in runner.calls)
+
+    async def test_reclaim_ownership_noop_when_profile_absent(self) -> None:
+        adapter, runner, _ = make_adapter()
+        assert await adapter.reclaim_profile_ownership(PROFILE, image="ubuntu") is True
+        assert runner.calls == []
+
+    async def test_reclaim_ownership_false_on_docker_failure(self) -> None:
+        adapter, runner, files = make_adapter()
+        files.mkdir(PROFILE_DIR)
+        runner.on("docker", "run", result=CommandResult(1, "", "no such image"))
+        assert await adapter.reclaim_profile_ownership(PROFILE, image="ubuntu") is False
 
     def test_seed_sandbox_profile_writes_once_and_respects_user_edits(self) -> None:
         adapter, _, files = make_adapter()

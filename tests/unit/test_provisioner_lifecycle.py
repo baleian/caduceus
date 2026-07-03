@@ -15,7 +15,12 @@ from caduceus.core.errors import NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import CommandResult
 from caduceus.core.registry import Registry, RegistryStore
-from caduceus.core.types import AgentSpec, CaduceusConfig, UpstreamConfig
+from caduceus.core.types import (
+    DEFAULT_DOCKER_IMAGE,
+    AgentSpec,
+    CaduceusConfig,
+    UpstreamConfig,
+)
 from caduceus.core.workspace import WorkspaceManager
 from tests.unit.fakes import FakeClock, InMemoryFileStore, RecordingEventSink, ScriptedRunner
 
@@ -97,6 +102,8 @@ class Harness:
             self.runner.calls.append(list(argv))
             if argv[:3] == ["hermes", "profile", "create"]:
                 self.files.mkdir(HERMES_HOME / "profiles" / argv[3])
+            if argv[:3] == ["hermes", "profile", "delete"]:
+                self.files.dirs.discard(str(HERMES_HOME / "profiles" / argv[3]))
             if argv[:2] == ["hermes", "--version"]:
                 return CommandResult(0, "hermes 1.0\n", "")
             if argv[:2] == ["docker", "version"]:
@@ -251,7 +258,10 @@ async def test_managed_config_renders_plain_root_backend() -> None:
     assert "BASH_ENV" not in config_text
 
 
-async def test_remove_pipeline_has_no_privileged_scrub() -> None:
+async def test_remove_pipeline_no_scrub_on_success_path() -> None:
+    # The happy path never runs a privileged ownership scrub: hermes' own delete
+    # succeeds, so the lazy reclaim (chown-via-docker) is never reached. The scrub
+    # only fires as failure recovery — see test_remove_reclaims_ownership_* below.
     h = Harness()
     h.provisioner.create_agent(AgentSpec(name="coder"))
     await h.drain()
@@ -264,6 +274,82 @@ async def test_remove_pipeline_has_no_privileged_scrub() -> None:
         "gateway-stop", "containers-remove", "profile-delete", "registry-remove",
     ]
     assert not any("chown" in c for c in h.runner.calls)
+
+
+async def test_remove_reclaims_ownership_then_deletes() -> None:
+    # First hermes delete fails (root-owned artifacts); a chown-via-docker reclaim
+    # using the agent's image lets the retried delete succeed. Pipeline stays 4 steps.
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+
+    delete_calls = 0
+
+    async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
+        nonlocal delete_calls
+        h.runner.calls.append(list(argv))
+        if argv[:3] == ["hermes", "profile", "delete"]:
+            delete_calls += 1
+            if delete_calls == 1:
+                return CommandResult(1, "", "PermissionError: [Errno 13]")
+            h.files.dirs.discard(str(HERMES_HOME / "profiles" / argv[3]))
+            return CommandResult(0, "", "")
+        return CommandResult(0, "", "")
+
+    h.runner.run = run  # type: ignore[method-assign]
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+    assert delete_calls == 2  # failed once, retried after reclaim
+    reclaim = [c for c in h.runner.calls if c[:2] == ["docker", "run"] and "chown" in c]
+    assert len(reclaim) == 1
+    assert DEFAULT_DOCKER_IMAGE in reclaim[0]  # reclaim uses the agent's own image
+    with pytest.raises(NotFoundError):
+        h.registry.get("coder")
+
+
+async def test_remove_proceeds_to_registry_when_dir_removal_fails() -> None:
+    # Q2=B: even if the profile dir can't be fully removed (reclaim didn't help),
+    # the registry record is dropped so the agent disappears from Caduceus.
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+
+    async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
+        h.runner.calls.append(list(argv))
+        if argv[:3] == ["hermes", "profile", "delete"]:
+            return CommandResult(1, "", "PermissionError: still stuck")
+        return CommandResult(0, "", "")
+
+    h.runner.run = run  # type: ignore[method-assign]
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"  # removal still completes
+    with pytest.raises(NotFoundError):
+        h.registry.get("coder")
+    # a reclaim was attempted before giving up
+    assert any(c[:2] == ["docker", "run"] and "chown" in c for c in h.runner.calls)
+
+
+async def test_create_reclaims_and_deletes_orphan_profile_dir() -> None:
+    # A prior removal left the profile dir behind with no registry record.
+    # Re-creating the same agent must delete the orphan before creating.
+    h = Harness()
+    orphan = HERMES_HOME / "profiles" / "cad-coder"
+    h.files.mkdir(orphan)
+
+    job = h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+    delete = ["hermes", "profile", "delete", "cad-coder", "--yes"]
+    create = ["hermes", "profile", "create", "cad-coder"]
+    assert delete in h.runner.calls
+    assert h.runner.calls.index(delete) < h.runner.calls.index(create)
 
 
 async def test_create_seeds_api_server_toolsets_and_unattended_defaults() -> None:

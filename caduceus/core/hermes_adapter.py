@@ -16,6 +16,7 @@ verified against hermes source (hermes-research.md):
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,18 +118,57 @@ class HermesAdapter:
                 f"hermes reported success but profile dir missing: {self.profile_dir(profile)}"
             )
 
-    async def delete_profile(self, profile: str) -> None:
+    async def delete_profile(self, profile: str, *, image: str | None = None) -> None:
         if not self._files.exists(self.profile_dir(profile)):
             return  # already gone — deletion is idempotent
         result = await self._run(
             [self._hermes, "profile", "delete", profile, "--yes"],
             timeout_s=HERMES_TIMEOUT_S,
         )
-        if not result.ok:
-            raise HermesError(
-                f"hermes profile delete {profile} failed (exit {result.returncode})",
-                detail=redact(result.stderr or result.stdout),
+        if result.ok:
+            return
+        # Lazy ownership recovery: hermes runs its docker sandboxes as container
+        # root, leaving root-owned bind-mount artifacts inside the profile that
+        # hermes' own ``shutil.rmtree`` can't delete when the daemon runs as a
+        # non-root user (rootless docker was retired in d2b69f3). Reclaim
+        # ownership via a privileged throwaway container — using the agent's own
+        # image, already pulled — then retry the delete once. Without an image
+        # (e.g. integration callers) there's nothing to reclaim with, so the
+        # original failure surfaces unchanged.
+        if image is not None and await self.reclaim_profile_ownership(profile, image=image):
+            result = await self._run(
+                [self._hermes, "profile", "delete", profile, "--yes"],
+                timeout_s=HERMES_TIMEOUT_S,
             )
+            if result.ok:
+                return
+        raise HermesError(
+            f"hermes profile delete {profile} failed (exit {result.returncode})",
+            detail=redact(result.stderr or result.stdout),
+        )
+
+    async def reclaim_profile_ownership(self, profile: str, *, image: str) -> bool:
+        """``chown`` the profile tree back to the host uid:gid via a throwaway
+        root docker container. The docker daemon runs as root, so it can reclaim
+        the root-owned sandbox artifacts it created. Best-effort: returns True on
+        success, False on any failure (never raises) so callers can decide."""
+        profile_dir = self.profile_dir(profile)
+        if not self._files.exists(profile_dir):
+            return True
+        owner = f"{os.getuid()}:{os.getgid()}"
+        try:
+            result = await self._run(
+                [
+                    self._docker, "run", "--rm", "--network", "none",
+                    "-v", f"{profile_dir}:/target",
+                    image,
+                    "chown", "-R", owner, "/target",
+                ],
+                timeout_s=DOCKER_TIMEOUT_S,
+            )
+        except CaduceusError:
+            return False
+        return bool(result.ok)
 
     # Login-shell profile seeded into the default terminal sandbox home.
     # hermes captures its terminal env snapshot from ``bash -l`` (base.py

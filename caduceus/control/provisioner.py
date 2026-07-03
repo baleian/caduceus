@@ -7,13 +7,14 @@ No automatic rollback (E4). The workspace is never touched on removal (L3).
 
 from __future__ import annotations
 
+import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from caduceus.control.jobs import Job, JobEngine
 from caduceus.core.config import ConfigHolder
-from caduceus.core.errors import ConflictError, DomainValidationError
+from caduceus.core.errors import ConflictError, DomainValidationError, HermesError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import Clock
 from caduceus.core.process_manager import GatewayProcessManager
@@ -25,6 +26,8 @@ from caduceus.core.types import (
     profile_name_for,
 )
 from caduceus.core.workspace import WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 HEALTH_WAIT_TIMEOUT_S = 60.0
 HEALTH_WAIT_INTERVAL_S = 1.0
@@ -105,6 +108,14 @@ class Provisioner:
             state.api_server_key = secrets.token_hex(16)
 
         async def profile_create() -> None:
+            # A prior removal may have dropped the registry record while leaving
+            # the profile dir behind (root-owned artifacts it couldn't delete —
+            # see remove_agent). validate() already proved no record exists, so
+            # any surviving dir is definitionally an orphan: reclaim + delete it
+            # (idempotent — no-op when absent) before creating. Create runs
+            # privileged sandbox containers anyway, so leveraging one here to
+            # clean up introduces nothing new.
+            await self._hermes.delete_profile(profile, image=spec.docker_image)
             await self._hermes.create_profile(profile)
 
         async def config_apply() -> None:
@@ -194,7 +205,17 @@ class Provisioner:
             await self._hermes.remove_containers(profile)
 
         async def profile_delete() -> None:
-            await self._hermes.delete_profile(profile)
+            try:
+                await self._hermes.delete_profile(profile, image=record.spec.docker_image)
+            except HermesError:
+                # The dir couldn't be fully removed even after an ownership
+                # reclaim + retry. Drop the registry record anyway so the agent
+                # disappears from Caduceus (visibility); the orphan dir is
+                # reclaimed + deleted on the next create with this name.
+                logger.warning(
+                    "profile %s dir not fully removed; proceeding with registry "
+                    "removal (orphan cleaned on next create)", profile,
+                )
 
         async def registry_remove() -> None:
             self._registry.remove(name)
