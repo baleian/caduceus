@@ -1,7 +1,9 @@
 """Proxy pipeline (logic §1.1): authenticate → rewrite → relay → account.
 
 Thin by design: bodies are forwarded unmodified and never logged or stored
-(rule P1). Usage numbers come only from what the upstream reports (E3).
+(rule P1). Token usage is NOT accounted here — hermes tracks it natively per
+session (``/api/sessions`` usage fields); the proxy records only request-level
+metadata (status, latency) that hermes has no visibility into.
 """
 
 from __future__ import annotations
@@ -52,21 +54,6 @@ def openai_error(status: int, message: str, err_type: str, code: str) -> JSONRes
         status_code=status,
         content={"error": {"message": message, "type": err_type, "code": code}},
     )
-
-
-def _extract_usage(payload: bytes) -> tuple[int | None, int | None]:
-    """Pull usage tokens from an OpenAI-style JSON body; None when absent."""
-    try:
-        usage = json.loads(payload).get("usage") or {}
-        return usage.get("prompt_tokens"), usage.get("completion_tokens")
-    except (ValueError, AttributeError):
-        return None, None
-
-
-def _extract_usage_from_sse(line: str) -> tuple[int | None, int | None]:
-    if not line.startswith("data:") or '"usage"' not in line:
-        return None, None
-    return _extract_usage(line[len("data:"):].strip().encode())
 
 
 class ProxyService:
@@ -143,10 +130,7 @@ class ProxyService:
             await upstream_response.aclose()
             return self._fail(agent, model, started, exc)
         await upstream_response.aclose()
-        input_tokens, output_tokens = _extract_usage(payload)
-        self._record(
-            agent, model, upstream_response.status_code, started, input_tokens, output_tokens
-        )
+        self._record(agent, model, upstream_response.status_code, started)
         return Response(
             content=payload,
             status_code=upstream_response.status_code,
@@ -163,22 +147,14 @@ class ProxyService:
         service = self
 
         async def stream() -> AsyncIterator[bytes]:
-            input_tokens: int | None = None
-            output_tokens: int | None = None
             try:
                 async for line in upstream_response.aiter_lines():
-                    found_in, found_out = _extract_usage_from_sse(line)
-                    if found_in is not None or found_out is not None:
-                        input_tokens, output_tokens = found_in, found_out
                     yield (line + "\n").encode()
             finally:
                 # Runs on normal completion AND client disconnect → upstream
                 # request is cancelled and accounting always happens.
                 await upstream_response.aclose()
-                service._record(
-                    agent, model, upstream_response.status_code, started,
-                    input_tokens, output_tokens,
-                )
+                service._record(agent, model, upstream_response.status_code, started)
 
         return StreamingResponse(
             stream(),
@@ -190,36 +166,20 @@ class ProxyService:
     def _fail(self, agent: str, model: str, started: float, exc: Exception) -> JSONResponse:
         status, err_type, code = map_exception(exc)
         logger.warning("upstream failure for agent=%s: %s", agent, type(exc).__name__)
-        self._record(agent, model, status, started, None, None)
+        self._record(agent, model, status, started)
         return openai_error(status, "Upstream request failed", err_type, code)
 
-    def _record(
-        self,
-        agent: str,
-        model: str,
-        status: int,
-        started: float,
-        input_tokens: int | None,
-        output_tokens: int | None,
-    ) -> None:
+    def _record(self, agent: str, model: str, status: int, started: float) -> None:
         latency_ms = (self._clock.monotonic() - started) * 1000.0
         ts = self._clock.now_iso()
         self._traffic.record(
-            agent,
-            TrafficSample(
-                ts=ts, model=model, status=status, latency_ms=latency_ms,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-            ),
+            agent, TrafficSample(ts=ts, model=model, status=status, latency_ms=latency_ms)
         )
         self._events.emit(
             CoreEvent(
                 kind="traffic.request",
                 agent=agent,
-                data={
-                    "model": model, "status": status,
-                    "latency_ms": round(latency_ms, 1),
-                    "input_tokens": input_tokens, "output_tokens": output_tokens,
-                },
+                data={"model": model, "status": status, "latency_ms": round(latency_ms, 1)},
                 ts=ts,
             )
         )

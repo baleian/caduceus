@@ -50,8 +50,6 @@ const coreEvent: fc.Arbitrary<CoreEvent> = fc
       model,
       status: 200,
       latency_ms: 10,
-      input_tokens: 1,
-      output_tokens: 2,
       error: 'boom',
     },
     ts: `2026-07-03T00:00:${String(tsCounter++ % 60).padStart(2, '0')}Z-${tsCounter}`,

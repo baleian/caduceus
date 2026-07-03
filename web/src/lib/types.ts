@@ -56,8 +56,6 @@ export interface JobSnapshot {
 export interface TrafficAgentSummary {
   requests: number
   errors: number
-  input_tokens: number
-  output_tokens: number
   last_request_at: string | null
 }
 
@@ -72,7 +70,7 @@ export interface GatewayInfo {
   }
   traffic: {
     since: string
-    totals: { requests: number; errors: number; input_tokens: number; output_tokens: number }
+    totals: { requests: number; errors: number }
     agents: Record<string, TrafficAgentSummary>
   }
 }
@@ -80,16 +78,24 @@ export interface GatewayInfo {
 /** GET /api/status */
 export interface DeepStatus {
   agents: Record<string, string>
-  traffic: { requests: number; errors: number; input_tokens: number; output_tokens: number }
+  traffic: { requests: number; errors: number }
   upstream: string
 }
 
-/** api_server session (via /agents/{name}/api/api/sessions) */
+/** api_server session (via /agents/{name}/api/api/sessions).
+ * Token usage is hermes-native: cumulative per-session counts (cache split
+ * out), populated by hermes' update_token_counts. Optional — older sessions
+ * or non-usage-tracking runs may omit them. */
 export interface SessionInfo {
   id: string
   title?: string | null
   started_at?: string | null
   last_active?: string | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  estimated_cost_usd?: number | null
 }
 
 /** api_server persisted message */

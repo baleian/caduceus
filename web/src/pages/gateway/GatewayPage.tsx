@@ -1,17 +1,32 @@
-/** Gateway page (Q7=A): upstream form (hot-swap), per-agent traffic summary
- * fed by REST snapshot + live traffic events, recent request metadata list
- * (ring buffer ≤100 — bodies are never stored server-side). */
+/** Gateway page (Q7=A): upstream form (hot-swap), per-agent request traffic
+ * (requests/errors/latency — proxy-level metadata hermes cannot see), and a
+ * per-agent token-usage table summed from each agent's hermes sessions
+ * (hermes-native usage — the proxy no longer counts tokens itself). */
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
+import { listSessions } from '../../api/agentApi'
 import { ApiError } from '../../api/client'
 import { validateUpstream } from '../../lib/forms'
 import type { GatewayInfo } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
 
+const fmt = (n: number): string => n.toLocaleString('en-US')
+
+interface AgentUsage {
+  agent: string
+  sessions: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  costUsd: number
+  reachable: boolean
+}
+
 export function GatewayPage(): ReactNode {
   const { client, state, toast } = useApp()
   const [info, setInfo] = useState<GatewayInfo | null>(null)
+  const [usage, setUsage] = useState<AgentUsage[] | null>(null)
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKeyEnv, setApiKeyEnv] = useState('')
@@ -30,9 +45,52 @@ export function GatewayPage(): ReactNode {
     }
   }, [client, toast])
 
+  // Per-agent usage = sum of that agent's hermes sessions' usage. Fan-out over
+  // agents; an unreachable/stopped agent degrades to reachable:false rather than
+  // failing the whole table.
+  const loadUsage = useCallback(async () => {
+    let agents
+    try {
+      agents = await client.listAgents()
+    } catch {
+      setUsage([])
+      return
+    }
+    const rows = await Promise.all(
+      agents.map(async (a): Promise<AgentUsage> => {
+        try {
+          const sessions = await listSessions(client, a.name)
+          const sum = (key: keyof (typeof sessions)[number]): number =>
+            sessions.reduce((n, s) => n + (Number(s[key]) || 0), 0)
+          return {
+            agent: a.name,
+            sessions: sessions.length,
+            inputTokens: sum('input_tokens'),
+            outputTokens: sum('output_tokens'),
+            cacheReadTokens: sum('cache_read_tokens'),
+            costUsd: sum('estimated_cost_usd'),
+            reachable: true,
+          }
+        } catch {
+          return {
+            agent: a.name,
+            sessions: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            costUsd: 0,
+            reachable: false,
+          }
+        }
+      }),
+    )
+    setUsage(rows)
+  }, [client])
+
   useEffect(() => {
     void refetch()
-  }, [refetch])
+    void loadUsage()
+  }, [refetch, loadUsage])
 
   async function save(): Promise<void> {
     const found = validateUpstream(baseUrl, apiKeyEnv)
@@ -113,13 +171,60 @@ export function GatewayPage(): ReactNode {
         </div>
       </section>
 
+      <section>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">
+            Token usage (per agent — summed from hermes sessions)
+          </h2>
+          <button
+            data-testid="gateway-usage-refresh-button"
+            className="rounded border border-edge px-3 py-1 text-sm hover:bg-panel"
+            onClick={() => void loadUsage()}
+          >
+            Refresh
+          </button>
+        </div>
+        <table className="w-full border-collapse text-sm" data-testid="gateway-usage-table">
+          <thead>
+            <tr className="border-b border-edge text-left text-xs uppercase tracking-wide text-ink-dim">
+              <th className="px-2 py-1.5">agent</th>
+              <th className="px-2 py-1.5">sessions</th>
+              <th className="px-2 py-1.5">input</th>
+              <th className="px-2 py-1.5">cache read</th>
+              <th className="px-2 py-1.5">output</th>
+              <th className="px-2 py-1.5">est. cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(usage ?? []).map((u) => (
+              <tr key={u.agent} className="border-b border-edge/60">
+                <td className="px-2 py-1.5 font-medium">{u.agent}</td>
+                <td className="px-2 py-1.5">
+                  {u.reachable ? u.sessions : <span className="text-ink-dim">unreachable</span>}
+                </td>
+                <td className="px-2 py-1.5">{fmt(u.inputTokens)}</td>
+                <td className="px-2 py-1.5">{fmt(u.cacheReadTokens)}</td>
+                <td className="px-2 py-1.5">{fmt(u.outputTokens)}</td>
+                <td className="px-2 py-1.5 font-mono text-xs">${u.costUsd.toFixed(4)}</td>
+              </tr>
+            ))}
+            {usage != null && usage.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-2 py-4 text-center text-ink-dim">
+                  no agents
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
       {info && (
         <section>
           <h2 className="mb-2 text-sm font-semibold">
-            Traffic since {info.traffic.since}
+            Request traffic since {info.traffic.since}
             <span className="ml-2 font-normal text-ink-dim">
-              {info.traffic.totals.requests} requests · {info.traffic.totals.errors} errors ·{' '}
-              {info.traffic.totals.input_tokens}/{info.traffic.totals.output_tokens} tokens
+              {info.traffic.totals.requests} requests · {info.traffic.totals.errors} errors
             </span>
           </h2>
           <table className="w-full border-collapse text-sm" data-testid="gateway-traffic-table">
@@ -128,7 +233,6 @@ export function GatewayPage(): ReactNode {
                 <th className="px-2 py-1.5">agent</th>
                 <th className="px-2 py-1.5">requests</th>
                 <th className="px-2 py-1.5">errors</th>
-                <th className="px-2 py-1.5">in / out tokens</th>
                 <th className="px-2 py-1.5">last request</th>
               </tr>
             </thead>
@@ -138,9 +242,6 @@ export function GatewayPage(): ReactNode {
                   <td className="px-2 py-1.5 font-medium">{name}</td>
                   <td className="px-2 py-1.5">{summary.requests}</td>
                   <td className="px-2 py-1.5">{summary.errors}</td>
-                  <td className="px-2 py-1.5">
-                    {summary.input_tokens} / {summary.output_tokens}
-                  </td>
                   <td className="px-2 py-1.5 font-mono text-xs">
                     {summary.last_request_at ?? '—'}
                   </td>
@@ -148,7 +249,7 @@ export function GatewayPage(): ReactNode {
               ))}
               {Object.keys(info.traffic.agents).length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-2 py-4 text-center text-ink-dim">
+                  <td colSpan={4} className="px-2 py-4 text-center text-ink-dim">
                     no proxied requests yet
                   </td>
                 </tr>
@@ -185,9 +286,7 @@ export function GatewayPage(): ReactNode {
                 <span className={request.status >= 400 ? 'text-bad' : 'text-ok'}>
                   {request.status}
                 </span>
-                <span className="text-ink-dim">
-                  {request.latencyMs}ms · {request.inputTokens}/{request.outputTokens} tok
-                </span>
+                <span className="text-ink-dim">{request.latencyMs}ms</span>
               </li>
             ))}
           {state.live.recentRequests.length === 0 && (

@@ -1,7 +1,9 @@
 """In-memory traffic accounting (FD5, rules P1/P2, property PU2-2).
 
-Only metadata is recorded — request/response bodies never enter this module.
-Everything resets on daemon restart by design (FD5); ``since`` marks that.
+Only request-level metadata is recorded — request/response bodies never enter
+this module, and token usage is NOT tracked here (hermes accounts tokens
+natively per session). Everything resets on daemon restart by design (FD5);
+``since`` marks that.
 """
 
 from __future__ import annotations
@@ -19,16 +21,12 @@ class TrafficSample:
     model: str
     status: int
     latency_ms: float
-    input_tokens: int | None = None  # None = upstream did not report (no guessing)
-    output_tokens: int | None = None
 
 
 @dataclass
 class AgentTraffic:
     requests: int = 0
     errors: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
     last_request_at: str | None = None
     recent: deque[TrafficSample] = field(default_factory=lambda: deque(maxlen=RING_SIZE))
 
@@ -43,10 +41,6 @@ class TrafficStats:
         stats.requests += 1
         if sample.status >= 400:
             stats.errors += 1
-        if sample.input_tokens:
-            stats.input_tokens += sample.input_tokens
-        if sample.output_tokens:
-            stats.output_tokens += sample.output_tokens
         stats.last_request_at = sample.ts
         stats.recent.append(sample)
 
@@ -57,8 +51,6 @@ class TrafficStats:
         totals = {
             "requests": sum(a.requests for a in self._agents.values()),
             "errors": sum(a.errors for a in self._agents.values()),
-            "input_tokens": sum(a.input_tokens for a in self._agents.values()),
-            "output_tokens": sum(a.output_tokens for a in self._agents.values()),
         }
         return {
             "since": self._since,
@@ -67,8 +59,6 @@ class TrafficStats:
                 name: {
                     "requests": a.requests,
                     "errors": a.errors,
-                    "input_tokens": a.input_tokens,
-                    "output_tokens": a.output_tokens,
                     "last_request_at": a.last_request_at,
                 }
                 for name, a in sorted(self._agents.items())

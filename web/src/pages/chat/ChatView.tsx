@@ -44,6 +44,8 @@ import { loadPrefs } from '../../state/prefs'
 
 const DELTA_LIMIT = 1_000_000
 
+const fmt = (n: number): string => n.toLocaleString('en-US')
+
 interface ToolCall {
   tool: string
   preview: string
@@ -98,6 +100,11 @@ export function ChatView(): ReactNode {
   // leaving mid-stream needs an explicit confirmation (the run continues
   // server-side and is recoverable via re-hydration — W7)
   const blocker = useBlocker(streaming)
+
+  // Session usage is hermes-native and cumulative: it rides on the session
+  // object from listSessions. Loaded on select/first render and refreshed by
+  // refreshSessions() at the end of every turn — no client-side token math.
+  const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
   const refreshSessions = useCallback(async (): Promise<SessionInfo[]> => {
     const list = await listSessions(client, agent)
@@ -398,8 +405,13 @@ export function ChatView(): ReactNode {
 
       <section className="flex min-h-[70vh] flex-1 flex-col rounded border border-edge bg-panel">
         <header className="border-b border-edge px-4 py-2 text-sm text-ink-dim">
-          chat with <span className="font-medium text-ink">{agent}</span>
-          {activeId && <span className="ml-2 font-mono text-xs">session {activeId}</span>}
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              chat with <span className="font-medium text-ink">{agent}</span>
+              {activeId && <span className="ml-2 font-mono text-xs">session {activeId}</span>}
+            </div>
+            <SessionUsage session={activeSession} />
+          </div>
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto p-4" data-testid="chat-transcript">
@@ -519,6 +531,31 @@ export function ChatView(): ReactNode {
         onCancel={() => blocker.state === 'blocked' && blocker.reset()}
       />
     </div>
+  )
+}
+
+/** Fixed session-usage readout — hermes-native cumulative counts for the active
+ * session (cache read split out). Hidden until a session with usage exists;
+ * updates whenever the session list refreshes (i.e. after each turn). */
+function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
+  const { session } = props
+  const input = session?.input_tokens ?? null
+  const output = session?.output_tokens ?? null
+  const cacheRead = session?.cache_read_tokens ?? 0
+  const cost = session?.estimated_cost_usd ?? null
+  if (input == null && output == null) {
+    return (
+      <span className="text-xs text-ink-dim" data-testid="chat-session-usage">
+        session usage —
+      </span>
+    )
+  }
+  return (
+    <span className="text-xs text-ink-dim" data-testid="chat-session-usage">
+      session · in {fmt(input ?? 0)}
+      {cacheRead > 0 && <> (cache {fmt(cacheRead)})</>} / out {fmt(output ?? 0)}
+      {cost != null && cost > 0 && <> · ${cost.toFixed(4)}</>}
+    </span>
   )
 }
 

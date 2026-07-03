@@ -51,8 +51,7 @@ export function SystemPage(): ReactNode {
           <h2 className="mb-2 text-sm font-semibold">Deep status</h2>
           <p className="mb-2 font-mono text-xs text-ink-dim">upstream: {status.upstream}</p>
           <p className="mb-3 text-sm text-ink-dim">
-            traffic totals — {status.traffic.requests} requests, {status.traffic.errors} errors,{' '}
-            {status.traffic.input_tokens}/{status.traffic.output_tokens} tokens
+            traffic totals — {status.traffic.requests} requests, {status.traffic.errors} errors
           </p>
           <ul className="space-y-1 text-sm">
             {Object.entries(status.agents).map(([name, summary]) => (

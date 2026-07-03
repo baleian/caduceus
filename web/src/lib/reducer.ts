@@ -33,8 +33,6 @@ export interface RecentRequest {
   model: string
   status: number
   latencyMs: number
-  inputTokens: number
-  outputTokens: number
 }
 
 export interface Alert {
@@ -146,8 +144,6 @@ export function reduceEvent(state: LiveState, event: CoreEvent): LiveState {
         model: str(event.data['model']),
         status: num(event.data['status']),
         latencyMs: num(event.data['latency_ms']),
-        inputTokens: num(event.data['input_tokens']),
-        outputTokens: num(event.data['output_tokens']),
       }
       // replay overlap dedup: identical (ts, agent, model) is the same request
       if (

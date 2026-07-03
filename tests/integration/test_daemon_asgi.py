@@ -165,7 +165,8 @@ def test_full_agent_lifecycle_through_the_daemon() -> None:
 
         gateway = client.get("/api/gateway", headers=headers).json()
         assert gateway["traffic"]["totals"]["requests"] == 1
-        assert gateway["traffic"]["agents"]["coder"]["input_tokens"] == 3
+        # tokens are not accounted by the proxy (hermes tracks usage per session)
+        assert "input_tokens" not in gateway["traffic"]["agents"]["coder"]
 
         # S2: chat relay attaches API_SERVER_KEY server-side
         sessions = client.get("/agents/coder/api/api/sessions", headers=headers)

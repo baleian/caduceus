@@ -37,15 +37,14 @@ def status(ctx: typer.Context, json_output: JsonFlag = False) -> None:
         [
             name,
             str(t.get("requests", "")),
-            str(t.get("input_tokens", "")),
-            str(t.get("output_tokens", "")),
             str(t.get("errors", "")),
+            str(t.get("last_request_at", "") or ""),
         ]
         for name, t in sorted(agents.items())
         if isinstance(t, dict)
     ]
     if rows:
-        renderer.data_table(["AGENT", "REQUESTS", "IN TOKENS", "OUT TOKENS", "ERRORS"], rows)
+        renderer.data_table(["AGENT", "REQUESTS", "ERRORS", "LAST REQUEST"], rows)
     finish(ExitCode.OK)
 
 

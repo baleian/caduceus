@@ -73,19 +73,13 @@ async def test_missing_bearer_is_401() -> None:
     assert response.status_code == 401
 
 
-async def test_non_stream_relay_records_usage_and_replaces_auth() -> None:
+async def test_non_stream_relay_records_request_and_replaces_auth() -> None:
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["auth"] = request.headers.get("authorization", "")
         seen["url"] = str(request.url)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [{"message": {"content": "hello"}}],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
-            },
-        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
 
     app, traffic, sink, token = make_app(handler)
     async with client_for(app) as client:
@@ -97,19 +91,20 @@ async def test_non_stream_relay_records_usage_and_replaces_auth() -> None:
     assert response.status_code == 200
     assert seen["url"] == f"{UPSTREAM_URL}/chat/completions"  # path rewrite
     assert token not in seen["auth"]  # agent token never leaks upstream (S1)
-    agent_stats = traffic.agent("coder")
-    assert (agent_stats.requests, agent_stats.input_tokens, agent_stats.output_tokens) == (1, 11, 7)
+    # tokens are NOT accounted here (hermes tracks usage per session); only
+    # request-level metadata is recorded
+    assert traffic.agent("coder").requests == 1
     traffic_events = [e for e in sink.events if e.kind == "traffic.request"]
     assert traffic_events and traffic_events[0].data["model"] == "hermes-large"
+    assert "input_tokens" not in traffic_events[0].data
     # P1: no body content anywhere in the event
     assert "hi" not in json.dumps(traffic_events[0].data)
 
 
-async def test_sse_stream_relayed_with_usage_from_last_chunk() -> None:
+async def test_sse_stream_relayed_verbatim() -> None:
     sse_body = (
         'data: {"choices":[{"delta":{"content":"he"}}]}\n\n'
         'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n'
-        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n'
         "data: [DONE]\n\n"
     )
 
@@ -130,8 +125,7 @@ async def test_sse_stream_relayed_with_usage_from_last_chunk() -> None:
         received = "".join([chunk async for chunk in response.aiter_text()])
     assert '"content":"he"' in received
     assert "[DONE]" in received
-    agent_stats = traffic.agent("coder")
-    assert (agent_stats.input_tokens, agent_stats.output_tokens) == (5, 2)
+    assert traffic.agent("coder").requests == 1
 
 
 async def test_upstream_connect_error_maps_to_502() -> None:
@@ -149,22 +143,6 @@ async def test_upstream_connect_error_maps_to_502() -> None:
     assert response.json()["error"]["code"] == "upstream_unreachable"
     assert "refused" not in response.text  # R3: no internal details
     assert traffic.agent("coder").errors == 1
-
-
-async def test_usage_absent_records_none_not_guess() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": []})  # no usage field
-
-    app, traffic, _, token = make_app(handler)
-    async with client_for(app) as client:
-        await client.post(
-            "/v1/chat/completions",
-            json=CHAT_BODY,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-    stats = traffic.agent("coder")
-    assert (stats.requests, stats.input_tokens, stats.output_tokens) == (1, 0, 0)
-    assert stats.recent[-1].input_tokens is None  # honesty over estimation (E3)
 
 
 async def test_hot_swap_switches_target() -> None:

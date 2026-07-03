@@ -41,8 +41,6 @@ samples = st.builds(
     model=st.sampled_from(["hermes", "gpt", "llama"]),
     status=st.sampled_from([200, 200, 200, 401, 502]),
     latency_ms=st.floats(min_value=0, max_value=5000, allow_nan=False),
-    input_tokens=st.one_of(st.none(), st.integers(min_value=0, max_value=100_000)),
-    output_tokens=st.one_of(st.none(), st.integers(min_value=0, max_value=100_000)),
 )
 
 
@@ -52,7 +50,7 @@ def test_pu2_2_totals_equal_sum_of_agents(records: list[tuple[str, TrafficSample
     for agent, sample in records:
         stats.record(agent, sample)
     summary = stats.summary()
-    for key in ("requests", "errors", "input_tokens", "output_tokens"):
+    for key in ("requests", "errors"):
         assert summary["totals"][key] == sum(a[key] for a in summary["agents"].values())
     assert summary["totals"]["requests"] == len(records)
 

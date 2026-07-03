@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U4 완료·커밋(8641160). 유지보수: docker-rootless 완전 제거 (2026-07-03, audit.md 참조)
-- **Next Stage**: Build and Test (전 유닛 — 실물 integration 포함)
-- **Status**: docker-rootless 검사/설정(DockerConfig)/DOCKER_HOST 플럼빙 전부 제거, 475 tests passed. 알려진 회귀(승인됨): rootful 데몬에서 artifacts 호스트 소유권 문제 재발 가능. 이전 조사: hermes browser_navigate 도구 이슈 (stealth_warning/Browserbase 문구, 동작 불량 보고)
+- **Current Stage**: 개선 — 토큰 usage를 hermes-native로 전환 (U2+U4, 2026-07-03, plan: aidlc-docs/construction/cached-token-metrics/plan.md Revision 2). 코드 정리 완료, 승인/커밋 대기.
+- **Next Stage**: 사용자 승인 → (선택) 커밋. 이후 Build and Test (전 유닛)
+- **Status**: 게이트웨이 프록시의 토큰 자체 집계/context_window/per-turn/ContextBar 전부 제거(Revision 1도 되돌림). TrafficStats는 requests/errors/latency만 유지. 대시보드=agent별 hermes 세션 usage 합(fan-out), 채팅=활성 세션 usage(turn 종료시 refreshSessions 갱신). ruff/mypy/pytest 474 + web typecheck/lint/vitest46 통과, vite build web_dist 갱신. 실기 fan-out 합산 확인. 조사결론: hermes /messages의 per-message token_count는 채우는 설정 없음(항상 null), 세션 단위 usage만 노출. 알려진 회귀(승인됨): rootful 데몬 artifacts 호스트 소유권.
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

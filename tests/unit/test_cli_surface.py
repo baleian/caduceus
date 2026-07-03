@@ -67,9 +67,9 @@ class AdminFake:
                 "listen": {"host": "127.0.0.1", "port": 4285},
                 "upstream": {"base_url": "http://up", "api_key_env": "K",
                              "default_model": None},
-                "traffic": {"agents": {"bob": {"requests": 3, "input_tokens": 10,
-                                               "output_tokens": 20, "errors": 0}},
-                            "totals": {}},
+                "traffic": {"agents": {"bob": {"requests": 3, "errors": 0,
+                                               "last_request_at": "2026-07-03T00:00:00Z"}},
+                            "totals": {"requests": 3, "errors": 0}},
             })
         if path == "/api/agents/bob/logs":
             return httpx.Response(200, json={"lines": ["l1", "l2"]})
