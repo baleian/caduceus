@@ -109,6 +109,43 @@ def test_managed_model_renders_api_key_env_reference() -> None:
     assert YAML().load(merged)["model"]["api_key"] == "${OPENAI_API_KEY}"
 
 
+def test_workspace_mounted_via_native_cwd_passthrough() -> None:
+    """P1/P2: the managed workspace is mounted through hermes' native
+    docker_mount_cwd_to_workspace, not a hand-written bind mount.
+
+    Contract that keeps the flag from being a no-op: terminal.cwd is the HOST
+    workspace path (so hermes captures it as host_cwd and mounts it to
+    /workspace), and docker_volumes is empty (a ":/workspace" entry would win
+    and make hermes skip the cwd auto-mount)."""
+    managed = make_managed()
+    terminal = managed["terminal"]
+    assert terminal["docker_mount_cwd_to_workspace"] is True
+    assert terminal["cwd"] == "/home/u/.caduceus/workspaces/coder"  # HOST path
+    assert terminal["docker_volumes"] == []  # no explicit :/workspace mount
+    # host path must match hermes' _HOST_CWD_PREFIXES so it is honored as host_cwd
+    assert terminal["cwd"].startswith(("/home/", "/Users/"))
+
+
+def test_switching_from_explicit_mount_clears_stale_docker_volumes() -> None:
+    """Existing profiles carried an explicit docker_volumes bind; re-applying
+    the managed tree must force-clear it (else the flag stays a no-op)."""
+    from ruamel.yaml import YAML
+
+    legacy = (
+        "terminal:\n"
+        "  backend: docker\n"
+        "  cwd: /workspace\n"
+        "  docker_volumes:\n"
+        "  - /home/u/.caduceus/workspaces/coder:/workspace\n"
+    )
+    merged = merge_config_text(legacy, make_managed())
+    loaded = YAML().load(merged)
+    assert list(loaded["terminal"]["docker_volumes"]) == []
+    assert loaded["terminal"]["cwd"] == "/home/u/.caduceus/workspaces/coder"
+    assert loaded["terminal"]["docker_mount_cwd_to_workspace"] is True
+    assert diff_managed(merged, make_managed()) == []  # clean after re-apply
+
+
 def test_managed_config_renders_unattended_defaults() -> None:
     """approvals off (quoted — YAML-1.1 bool trap) + hard_stop guardrail on."""
     from ruamel.yaml import YAML

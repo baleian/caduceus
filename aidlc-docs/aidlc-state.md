@@ -51,7 +51,7 @@ Order: U1 → U2 → U3 → U4
 - [x] U1 Code Generation — APPROVED & committed d5bec4c (105 tests)
 - [x] U2 Daemon — APPROVED & committed (proxy/control/daemon.py, 347 tests, ruff/mypy strict)
 - [x] U3 CLI — APPROVED & committed a4ad6ae (431 tests; 이후 rootless docker 모델 하드닝 dd23bea/4a42d34, 461 tests)
-- [ ] U4 Web UI — FD APPROVED (2026-07-03); NFR Requirements IN PROGRESS
+- [x] U4 Web UI — APPROVED & committed 8641160 (FD/NFR/Code Gen 전체, Playwright E2E 14/14; 승인 게이트 중 수정 4건: ui 블록/토큰 fragment 출력/relay origin/세션 자동 생성)
 - [ ] NFR Requirements — EXECUTE per-unit
 - [ ] NFR Design — EXECUTE per-unit
 - [ ] Infrastructure Design — CONDITIONAL per-unit
@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U4 Web UI — Code Generation 완료 (승인 게이트)
-- **Next Stage**: Build and Test (전 유닛)
-- **Status**: U4 14단계 전부 완료 — SPA 45파일, 서버측 5파일 수정(E2E 발견 U2 결함 2건 포함), 검증 Python 472 / Web 46 / Playwright E2E 14/14, 번들 85.5KB gzip. code-summary.md 편차 5건 기록. 승인 대기
+- **Current Stage**: U4 완료·커밋(8641160). 운영 이슈 진단 중 (browser_navigate)
+- **Next Stage**: Build and Test (전 유닛 — 실물 integration 포함)
+- **Status**: U4 커밋 완료(사용자 지시 2026-07-03 = 승인). 현재: hermes browser_navigate 도구 이슈 조사 (stealth_warning/Browserbase 문구, 동작 불량 보고)
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

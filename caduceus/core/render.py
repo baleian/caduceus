@@ -63,15 +63,29 @@ def managed_config(
 
     terminal: dict[str, Any] = {
         "backend": "docker",
-        "cwd": "/workspace",
-        "docker_image": spec.docker_image,
-        "container_persistent": True,
+        # Mount the managed per-agent workspace via hermes' NATIVE
+        # docker_mount_cwd_to_workspace (P1/P2 — use the native mechanism
+        # instead of a hand-written bind mount): terminal.cwd names the HOST
+        # workspace dir, which hermes itself bind-mounts to /workspace and then
+        # remaps the container cwd to /workspace. File tools and the terminal
+        # both operate there (both go through the docker backend).
+        #
+        # docker_volumes is pinned to [] rather than dropped: hermes skips its
+        # cwd auto-mount when a docker_volumes ":/workspace" entry exists
+        # (docker.py — explicit mount wins), so leaving a stale entry would make
+        # the flag a no-op. Keeping the key in the managed set also force-clears
+        # any prior explicit mount on existing profiles via merge/drift.
+        #
         # The sandbox runs as container root so system package managers work
         # (F3). The docker daemon itself is ROOTLESS (preflight-enforced):
         # container root maps to the daemon user on the host, so everything
-        # written into bind mounts (workspace, sandbox home, dockerd-created
-        # mountpoints) is host-owned — no ownership workarounds needed here.
-        "docker_volumes": [f"{workspace_dir}:/workspace"],
+        # written into the workspace bind mount is host-owned — no ownership
+        # workarounds needed here.
+        "cwd": workspace_dir,
+        "docker_mount_cwd_to_workspace": True,
+        "docker_volumes": [],
+        "docker_image": spec.docker_image,
+        "container_persistent": True,
         "docker_extra_args": network_extra_args(spec.network_mode),
     }
     if spec.cpu is not None:
