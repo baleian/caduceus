@@ -98,8 +98,24 @@ export interface SessionInfo {
   estimated_cost_usd?: number | null
 }
 
-/** api_server persisted message */
+/** A persisted assistant tool call (OpenAI-style function call shape). */
+export interface SessionToolCall {
+  id?: string | null
+  call_id?: string | null
+  type?: string | null
+  function?: {
+    name?: string | null
+    arguments?: string | null
+  } | null
+}
+
+/** api_server persisted message. Assistant turns may carry `reasoning`
+ * (the model's thinking) and `tool_calls`; tool results carry `tool_name`. */
 export interface SessionMessage {
   role?: string
   content?: unknown
+  reasoning?: string | null
+  reasoning_content?: string | null
+  tool_calls?: SessionToolCall[] | null
+  tool_name?: string | null
 }

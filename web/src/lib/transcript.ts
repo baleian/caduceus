@@ -5,12 +5,18 @@
  * roles degrade to 'other' (never dropped, never thrown).
  */
 
-import type { SessionMessage } from './types'
+import type { SessionMessage, SessionToolCall } from './types'
+
+/** A single tool invocation rendered under an assistant turn. */
+export interface TranscriptToolCall {
+  name: string
+  args: string
+}
 
 export type TranscriptItem =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string }
-  | { kind: 'tool'; text: string }
+  | { kind: 'assistant'; text: string; reasoning: string; toolCalls: TranscriptToolCall[] }
+  | { kind: 'tool'; text: string; toolName: string }
   | { kind: 'other'; role: string; text: string }
 
 function contentText(content: unknown): string {
@@ -23,13 +29,40 @@ function contentText(content: unknown): string {
   }
 }
 
+function reasoningText(message: SessionMessage): string {
+  const value = message.reasoning ?? message.reasoning_content
+  return typeof value === 'string' ? value : ''
+}
+
+function toolCalls(raw: SessionToolCall[] | null | undefined): TranscriptToolCall[] {
+  if (!Array.isArray(raw)) return []
+  const calls: TranscriptToolCall[] = []
+  for (const call of raw) {
+    const fn = call?.function
+    const name = typeof fn?.name === 'string' ? fn.name : ''
+    const args = typeof fn?.arguments === 'string' ? fn.arguments : ''
+    if (name || args) calls.push({ name: name || '?', args })
+  }
+  return calls
+}
+
 export function transcriptFromMessages(raw: readonly SessionMessage[]): TranscriptItem[] {
   return raw.map((message) => {
     const role = typeof message.role === 'string' ? message.role : ''
     const text = contentText(message.content)
     if (role === 'user') return { kind: 'user', text }
-    if (role === 'assistant') return { kind: 'assistant', text }
-    if (role === 'tool') return { kind: 'tool', text }
+    if (role === 'assistant') {
+      return {
+        kind: 'assistant',
+        text,
+        reasoning: reasoningText(message),
+        toolCalls: toolCalls(message.tool_calls),
+      }
+    }
+    if (role === 'tool') {
+      const toolName = typeof message.tool_name === 'string' ? message.tool_name : ''
+      return { kind: 'tool', text, toolName }
+    }
     return { kind: 'other', role, text }
   })
 }

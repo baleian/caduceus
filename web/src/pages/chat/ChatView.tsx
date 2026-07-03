@@ -56,7 +56,6 @@ interface ToolCall {
 interface LiveTurn {
   userText: string
   assistantText: string
-  reasoning: string[]
   tools: ToolCall[]
   notes: string[]
 }
@@ -64,7 +63,6 @@ interface LiveTurn {
 const EMPTY_TURN: LiveTurn = {
   userText: '',
   assistantText: '',
-  reasoning: [],
   tools: [],
   notes: [],
 }
@@ -229,13 +227,15 @@ export function ChatView(): ReactNode {
           break
         }
         case 'reasoning.available': {
-          // hermes relays the reply text through this event; only render text
-          // the delta stream did not carry (U3 dedupe rule)
-          const text = String(payload['text'] ?? '').trim()
+          // Despite the name, hermes fills this event with the assistant REPLY
+          // text (conversation_loop relay), NOT the model's chain-of-thought.
+          // The real reasoning is only persisted to the session store, so it
+          // surfaces after the turn via W7 re-hydration — it cannot stream
+          // live. Treat this purely as a reply fallback for providers that emit
+          // no message.delta; the dedupe guard avoids echoing a streamed reply.
+          const text = redact(String(payload['text'] ?? ''), DELTA_LIMIT)
           setTurn((t) =>
-            text && !t.assistantText.includes(text)
-              ? { ...t, reasoning: [...t.reasoning, redact(text)] }
-              : t,
+            text.trim() && !t.assistantText.trim() ? { ...t, assistantText: text } : t,
           )
           break
         }
@@ -561,6 +561,7 @@ function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
 
 function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
   const { item } = props
+  const thinkingOpen = loadPrefs().thinkingOpen
   if (item.kind === 'user') {
     return (
       <div className="ml-auto max-w-[80%] rounded-lg bg-accent/15 px-3 py-2 text-sm whitespace-pre-wrap">
@@ -569,15 +570,41 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
     )
   }
   if (item.kind === 'assistant') {
+    // Reasoning + tool calls are re-hydrated from the persisted turn (W7), so
+    // history reads the same as it did live. An assistant tool-call message has
+    // empty content — render the reasoning/tool rows but skip the empty bubble.
     return (
-      <div className="max-w-[85%] rounded-lg bg-surface px-3 py-2 text-sm whitespace-pre-wrap">
-        {redact(item.text, DELTA_LIMIT)}
+      <div className="space-y-2">
+        {item.reasoning.trim() && (
+          <Collapsible
+            summary={<span className="text-xs text-ink-dim">∴ thinking</span>}
+            defaultOpen={thinkingOpen}
+            testId="chat-thinking-toggle"
+          >
+            <p className="whitespace-pre-wrap text-xs text-ink-dim">{redact(item.reasoning)}</p>
+          </Collapsible>
+        )}
+        {item.toolCalls.map((call, index) => (
+          <div key={index} className="font-mono text-xs text-ink-dim" data-testid="chat-tool-call">
+            <span className="text-ink-dim">⚙</span> {call.name}{' '}
+            {redact(call.args, 200).slice(0, 120)}
+          </div>
+        ))}
+        {item.text.trim() && (
+          <div className="max-w-[85%] rounded-lg bg-surface px-3 py-2 text-sm whitespace-pre-wrap">
+            {redact(item.text, DELTA_LIMIT)}
+          </div>
+        )}
       </div>
     )
   }
   if (item.kind === 'tool') {
+    const label = item.toolName ? `⚙ ${item.toolName} result` : '⚙ tool result'
     return (
-      <Collapsible summary={<span className="font-mono text-xs text-ink-dim">⚙ tool result</span>}>
+      <Collapsible
+        summary={<span className="font-mono text-xs text-ink-dim">{label}</span>}
+        testId="chat-tool-result"
+      >
         <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs text-ink-dim">
           {toolFailureSummary(item.text, 2000) || '(empty result)'}
         </pre>
@@ -593,13 +620,11 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
 
 function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode {
   const { turn, streaming } = props
-  const thinkingOpen = loadPrefs().thinkingOpen
+  // No thinking block live: hermes does not stream the model's chain-of-thought
+  // (only message.delta / tool.* / a reply relay). Reasoning is persisted and
+  // shown once the turn completes and the transcript re-hydrates (W7).
   const empty =
-    !turn.userText &&
-    !turn.assistantText &&
-    turn.reasoning.length === 0 &&
-    turn.tools.length === 0 &&
-    turn.notes.length === 0
+    !turn.userText && !turn.assistantText && turn.tools.length === 0 && turn.notes.length === 0
   if (empty) return null
   return (
     <div className="space-y-2" data-testid="chat-live-turn">
@@ -607,21 +632,6 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
         <div className="ml-auto max-w-[80%] rounded-lg bg-accent/15 px-3 py-2 text-sm whitespace-pre-wrap">
           {turn.userText}
         </div>
-      )}
-      {turn.reasoning.length > 0 && (
-        <Collapsible
-          summary={<span className="text-xs text-ink-dim">∴ thinking</span>}
-          defaultOpen={thinkingOpen}
-          testId="chat-thinking-toggle"
-        >
-          <div className="space-y-1 text-xs text-ink-dim">
-            {turn.reasoning.map((text, index) => (
-              <p key={index} className="whitespace-pre-wrap">
-                {text}
-              </p>
-            ))}
-          </div>
-        </Collapsible>
       )}
       {turn.tools.map((tool, index) => (
         <div key={index} className="font-mono text-xs text-ink-dim" data-testid="chat-tool-call">
