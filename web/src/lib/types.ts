@@ -128,7 +128,8 @@ export interface SessionToolCall {
 }
 
 /** api_server persisted message. Assistant turns may carry `reasoning`
- * (the model's thinking) and `tool_calls`; tool results carry `tool_name`. */
+ * (the model's thinking) and `tool_calls`; tool results carry `tool_name`
+ * and `tool_call_id` pointing back at the originating call. */
 export interface SessionMessage {
   role?: string
   content?: unknown
@@ -136,4 +137,5 @@ export interface SessionMessage {
   reasoning_content?: string | null
   tool_calls?: SessionToolCall[] | null
   tool_name?: string | null
+  tool_call_id?: string | null
 }

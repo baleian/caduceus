@@ -1,16 +1,26 @@
 /** Session messages → transcript render model (PU4-4 — total function).
  *
  * W7 single source of truth: the transcript is always rebuilt from the
- * api_server session store; every message maps to exactly one item, unknown
- * roles degrade to 'other' (never dropped, never thrown).
+ * api_server session store; unknown roles degrade to 'other' (never dropped,
+ * never thrown).
+ *
+ * Loss-free invariant (chat-transcript-rendering FR-2): every message renders
+ * in exactly one place — a `role:"tool"` message whose `tool_call_id` matches
+ * a not-yet-claimed assistant tool call merges into that call's card (no
+ * standalone item); every other message maps to exactly one item. Orphan tool
+ * results (no matching call, duplicate claim) fall back to standalone items.
  */
 
 import type { SessionMessage, SessionToolCall } from './types'
 
-/** A single tool invocation rendered under an assistant turn. */
+/** A single tool invocation rendered under an assistant turn. `result` is
+ * the raw content of the merged tool message (display parsing happens in the
+ * view via lib/toolFormat). */
 export interface TranscriptToolCall {
+  id: string
   name: string
   args: string
+  result: { text: string } | null
 }
 
 export type TranscriptItem =
@@ -41,30 +51,47 @@ function toolCalls(raw: SessionToolCall[] | null | undefined): TranscriptToolCal
     const fn = call?.function
     const name = typeof fn?.name === 'string' ? fn.name : ''
     const args = typeof fn?.arguments === 'string' ? fn.arguments : ''
-    if (name || args) calls.push({ name: name || '?', args })
+    const id =
+      typeof call?.id === 'string' && call.id
+        ? call.id
+        : typeof call?.call_id === 'string'
+          ? call.call_id
+          : ''
+    if (name || args) calls.push({ id, name: name || '?', args, result: null })
   }
   return calls
 }
 
 export function transcriptFromMessages(raw: readonly SessionMessage[]): TranscriptItem[] {
-  return raw.map((message) => {
+  const items: TranscriptItem[] = []
+  // call id → call awaiting its result; claimed at most once (first wins)
+  const unclaimed = new Map<string, TranscriptToolCall>()
+  for (const message of raw) {
     const role = typeof message.role === 'string' ? message.role : ''
     const text = contentText(message.content)
-    if (role === 'user') return { kind: 'user', text }
-    if (role === 'assistant') {
-      return {
-        kind: 'assistant',
-        text,
-        reasoning: reasoningText(message),
-        toolCalls: toolCalls(message.tool_calls),
+    if (role === 'user') {
+      items.push({ kind: 'user', text })
+    } else if (role === 'assistant') {
+      const calls = toolCalls(message.tool_calls)
+      for (const call of calls) {
+        if (call.id && !unclaimed.has(call.id)) unclaimed.set(call.id, call)
       }
+      items.push({ kind: 'assistant', text, reasoning: reasoningText(message), toolCalls: calls })
+    } else if (role === 'tool') {
+      const callId = typeof message.tool_call_id === 'string' ? message.tool_call_id : ''
+      const target = callId ? unclaimed.get(callId) : undefined
+      if (target) {
+        target.result = { text }
+        unclaimed.delete(callId)
+      } else {
+        const toolName = typeof message.tool_name === 'string' ? message.tool_name : ''
+        items.push({ kind: 'tool', text, toolName })
+      }
+    } else {
+      items.push({ kind: 'other', role, text })
     }
-    if (role === 'tool') {
-      const toolName = typeof message.tool_name === 'string' ? message.tool_name : ''
-      return { kind: 'tool', text, toolName }
-    }
-    return { kind: 'other', role, text }
-  })
+  }
+  return items
 }
 
 /** conversation_history for POST /v1/runs (U3 contract: runs API does not
@@ -80,31 +107,4 @@ export function historyFromMessages(
     }
   }
   return history
-}
-
-export const FAILURE_DETAIL_LIMIT = 200
-
-/** One-line failure detail from a persisted tool message's content
- * (U3 tool_failure_summary: terminal-style results are JSON
- * {output, exit_code, error}; other tools store plain text). */
-export function toolFailureSummary(content: unknown, limit = FAILURE_DETAIL_LIMIT): string {
-  let text = contentText(content)
-  if (typeof content === 'string') {
-    try {
-      const parsed: unknown = JSON.parse(content)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>
-        for (const key of ['error', 'output', 'message', 'detail']) {
-          const value = record[key]
-          if (typeof value === 'string' && value.trim()) {
-            text = value
-            break
-          }
-        }
-      }
-    } catch {
-      // plain text stays as-is
-    }
-  }
-  return text.replace(/\s+/g, ' ').trim().slice(0, limit)
 }

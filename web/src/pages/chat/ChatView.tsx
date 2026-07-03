@@ -13,6 +13,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronRight,
   Cog,
   Loader2,
   Pencil,
@@ -59,10 +60,18 @@ import {
 import { INITIAL_WINDOW, growWindow, isPinned, windowStart } from '../../lib/chatScroll'
 import { redact } from '../../lib/redact'
 import {
+  argsSummary,
+  failureHint,
+  parseToolArgs,
+  parseToolResult,
+  type FieldEntry,
+  type ResultView,
+} from '../../lib/toolFormat'
+import {
   historyFromMessages,
-  toolFailureSummary,
   transcriptFromMessages,
   type TranscriptItem,
+  type TranscriptToolCall,
 } from '../../lib/transcript'
 import type { SessionInfo } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
@@ -843,31 +852,167 @@ function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
   )
 }
 
-function ToolChip(props: {
+/** Bound for expanded args/output blocks — long outputs scroll inside the
+ * card; beyond this they are truncated (secrets always masked first-class
+ * via redact). */
+const RESULT_LIMIT = 4000
+
+function StatusIcon(props: { state: 'running' | 'ok' | 'failed' | 'pending' }): ReactNode {
+  if (props.state === 'running')
+    return <Loader2 size={12} className="shrink-0 animate-spin text-accent" aria-hidden />
+  if (props.state === 'ok') return <Check size={12} className="shrink-0 text-ok" aria-hidden />
+  if (props.state === 'failed') return <X size={12} className="shrink-0 text-bad" aria-hidden />
+  return <Cog size={12} className="shrink-0 text-ink-faint" aria-hidden />
+}
+
+function CodeBlock(props: { text: string; error?: boolean }): ReactNode {
+  return (
+    <pre
+      className={`max-h-64 overflow-auto rounded-md px-2.5 py-2 font-mono text-xs whitespace-pre-wrap ${
+        props.error ? 'bg-bad/10 text-bad' : 'bg-surface text-ink-dim'
+      }`}
+    >
+      {redact(props.text, RESULT_LIMIT)}
+    </pre>
+  )
+}
+
+function FieldGrid(props: { fields: FieldEntry[] }): ReactNode {
+  if (props.fields.length === 0) return <p className="text-xs text-ink-faint italic">(empty)</p>
+  return (
+    <dl className="space-y-1">
+      {props.fields.map((field) => (
+        <div key={field.key} className="flex gap-2">
+          <dt className="w-24 shrink-0 pt-0.5 text-[11px] break-all text-ink-faint">{field.key}</dt>
+          <dd className="min-w-0 flex-1 font-mono text-xs break-words whitespace-pre-wrap text-ink-dim">
+            {redact(field.value, RESULT_LIMIT) || '—'}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function SectionTitle(props: { children: ReactNode }): ReactNode {
+  return (
+    <h4 className="text-[10px] font-medium tracking-wide text-ink-faint uppercase">
+      {props.children}
+    </h4>
+  )
+}
+
+/** Expanded card body: Arguments (smart-formatted, Q2=A) + Result. */
+function ToolCardBody(props: { args: string | null; result: ResultView | null }): ReactNode {
+  const argsView = props.args !== null ? parseToolArgs(props.args) : null
+  const result = props.result
+  return (
+    <div className="space-y-2.5 border-t border-edge/70 px-3 py-2.5">
+      {argsView && (
+        <section data-testid="chat-tool-card-args" className="space-y-1">
+          <SectionTitle>Arguments</SectionTitle>
+          {argsView.kind === 'fields' ? (
+            <FieldGrid fields={argsView.fields} />
+          ) : (
+            <CodeBlock text={argsView.text} />
+          )}
+        </section>
+      )}
+      <section data-testid="chat-tool-card-result" className="space-y-1">
+        <div className="flex items-center gap-2">
+          <SectionTitle>Result</SectionTitle>
+          {result?.kind === 'terminal' && result.exitCode !== null && (
+            <span
+              className={`rounded-full px-1.5 py-px font-mono text-[10px] ${
+                result.exitCode === 0 ? 'bg-ok/10 text-ok' : 'bg-bad/10 text-bad'
+              }`}
+            >
+              exit {result.exitCode}
+            </span>
+          )}
+        </div>
+        {!result && <p className="text-xs text-ink-faint italic">no result</p>}
+        {result?.kind === 'terminal' && (
+          <>
+            {result.output && <CodeBlock text={result.output} />}
+            {result.error && <CodeBlock text={result.error} error />}
+            {!result.output && !result.error && (
+              <p className="text-xs text-ink-faint italic">(empty output)</p>
+            )}
+          </>
+        )}
+        {result?.kind === 'fields' && <FieldGrid fields={result.fields} />}
+        {result?.kind === 'raw' &&
+          (result.text.trim() ? (
+            <CodeBlock text={result.text} error={result.failed} />
+          ) : (
+            <p className="text-xs text-ink-faint italic">(empty result)</p>
+          ))}
+      </section>
+    </div>
+  )
+}
+
+/** Persisted tool invocation (FR-3, Q1=A): collapsed card with a one-line
+ * summary header; expands to Arguments + Result. Also renders orphan tool
+ * results (no matching call — args null). */
+function ToolCallCard(props: {
   name: string
-  detail?: string
-  state: 'running' | 'ok' | 'failed' | 'plain'
-  duration?: string
+  args: string | null
+  resultText: string | null
+  orphan?: boolean
+  testId: string
 }): ReactNode {
-  const icon =
-    props.state === 'running' ? (
-      <Loader2 size={11} className="animate-spin text-accent" aria-hidden />
-    ) : props.state === 'ok' ? (
-      <Check size={11} className="text-ok" aria-hidden />
-    ) : props.state === 'failed' ? (
-      <X size={11} className="text-bad" aria-hidden />
-    ) : (
-      <Cog size={11} className="text-ink-faint" aria-hidden />
-    )
+  const [open, setOpen] = useState(false)
+  const result = props.resultText !== null ? parseToolResult(props.resultText) : null
+  const failed = result?.failed ?? false
+  const summary =
+    props.args !== null ? redact(argsSummary(props.args)) : props.orphan ? 'unmatched result' : ''
+  const hint = result && failed ? redact(failureHint(result)) : ''
   return (
     <div
-      className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-edge bg-panel-2 px-2 py-1 font-mono text-xs text-ink-dim"
-      data-testid="chat-tool-call"
+      data-testid={props.testId}
+      className={`overflow-hidden rounded-lg border ${failed ? 'border-bad/50' : 'border-edge'} bg-panel-2`}
     >
-      {icon}
-      <span className="font-medium text-ink">{props.name}</span>
-      {props.detail && <span className="truncate">{props.detail}</span>}
-      {props.duration && <span className="text-ink-faint">({props.duration}s)</span>}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs hover:bg-panel"
+      >
+        <ChevronRight
+          size={12}
+          aria-hidden
+          className={`shrink-0 text-ink-faint transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        <StatusIcon state={failed ? 'failed' : result ? 'ok' : 'pending'} />
+        <span className="shrink-0 font-medium text-ink">{props.name}</span>
+        {summary && <span className="min-w-0 truncate text-ink-dim">{summary}</span>}
+        {hint && <span className="ml-auto max-w-[40%] shrink-0 truncate text-bad">{hint}</span>}
+      </button>
+      {open && <ToolCardBody args={props.args} result={result} />}
+    </div>
+  )
+}
+
+/** Streaming tool invocation (Q3=A): same card shell, header-only — live
+ * events carry just a preview and, on completion, success/duration; the full
+ * args/result card replaces it after end-of-turn re-hydration (W7). */
+function LiveToolCard(props: { tool: ToolCall }): ReactNode {
+  const { tool } = props
+  const state = tool.error === null ? 'running' : tool.error ? 'failed' : 'ok'
+  return (
+    <div
+      data-testid="chat-tool-call"
+      className={`overflow-hidden rounded-lg border ${state === 'failed' ? 'border-bad/50' : 'border-edge'} bg-panel-2`}
+    >
+      <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs">
+        <StatusIcon state={state} />
+        <span className="shrink-0 font-medium text-ink">{tool.tool}</span>
+        {tool.preview && <span className="min-w-0 truncate text-ink-dim">{tool.preview}</span>}
+        {tool.duration && (
+          <span className="ml-auto shrink-0 text-ink-faint">{tool.duration}s</span>
+        )}
+      </div>
     </div>
   )
 }
@@ -883,9 +1028,10 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
     )
   }
   if (item.kind === 'assistant') {
-    // Reasoning + tool calls are re-hydrated from the persisted turn (W7), so
-    // history reads the same as it did live. An assistant tool-call message has
-    // empty content — render the reasoning/tool rows but skip the empty bubble.
+    // Re-hydrated from the persisted turn (W7). Render order follows how the
+    // turn actually happened (FR-1): thinking → reply text → tool calls, each
+    // call carrying its merged result (FR-2). An assistant tool-call message
+    // has empty content — skip the empty bubble.
     return (
       <div className="space-y-2">
         {item.reasoning.trim() && (
@@ -897,33 +1043,33 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
             <p className="text-xs whitespace-pre-wrap text-ink-dim">{redact(item.reasoning)}</p>
           </Collapsible>
         )}
+        {item.text.trim() && <Markdown text={redact(item.text, DELTA_LIMIT)} />}
         {item.toolCalls.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {item.toolCalls.map((call, index) => (
-              <ToolChip
+          <div className="space-y-1.5">
+            {item.toolCalls.map((call: TranscriptToolCall, index) => (
+              <ToolCallCard
                 key={index}
                 name={call.name}
-                detail={redact(call.args, 200).slice(0, 80)}
-                state="plain"
+                args={call.args}
+                resultText={call.result?.text ?? null}
+                testId="chat-tool-call"
               />
             ))}
           </div>
         )}
-        {item.text.trim() && <Markdown text={redact(item.text, DELTA_LIMIT)} />}
       </div>
     )
   }
   if (item.kind === 'tool') {
-    const label = item.toolName ? `${item.toolName} result` : 'tool result'
+    // orphan result — its originating call was not found (FR-2 fallback)
     return (
-      <Collapsible
-        summary={<span className="font-mono text-xs text-ink-dim">⚙ {label}</span>}
+      <ToolCallCard
+        name={item.toolName || 'tool'}
+        args={null}
+        resultText={item.text}
+        orphan
         testId="chat-tool-result"
-      >
-        <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap text-ink-dim">
-          {toolFailureSummary(item.text, 2000) || '(empty result)'}
-        </pre>
-      </Collapsible>
+      />
     )
   }
   return (
@@ -949,15 +1095,9 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
         </div>
       )}
       {turn.tools.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-1.5">
           {turn.tools.map((tool, index) => (
-            <ToolChip
-              key={index}
-              name={tool.tool}
-              detail={tool.preview}
-              state={tool.error === null ? 'running' : tool.error ? 'failed' : 'ok'}
-              duration={tool.duration || undefined}
-            />
+            <LiveToolCard key={index} tool={tool} />
           ))}
         </div>
       )}
