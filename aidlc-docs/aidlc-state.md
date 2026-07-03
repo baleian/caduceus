@@ -63,8 +63,8 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: 개선 — 채팅 UX (지연 렌더 + 자동 스크롤/뱃지 + 완료 시 포커스 + 입력창 리디자인). Plan 승인(Q1=A/Q2=A/Q3=A, 계획 커밋 a3d5e05) → Part 2 Generation 완료(S1~S10 전체 [x]) — tsc/eslint/vitest 54/E2E 14/build 전부 통과, web_dist 갱신. **APPROVED & 커밋됨 (2026-07-04)**. plan: `construction/chat-ux-improvements/plan.md`, 요약: 동 폴더 code-summary.md.
-- **직전 Stage**: 개선 — U4 Web UI 전면 재설계 (2026-07-03, plan: web-ui-redesign/plan.md, 답변 Q1=A/Q2=A/Q3=B/Q4=A). Part 2 Generation 완료(S1~S14) — typecheck/lint/vitest 48/E2E 14/build 전부 통과. APPROVED & 커밋됨.
+- **Current Stage**: 개선 — 알림(드리프트·orphan) 토스트 UX (2026-07-04 시작). 범위: replay 이벤트 토스트 금지 + 첫 로딩 시 활성 상태(`GET /api/alerts`) 조회로 "지금 문제인 것만" 표시 + replay 이력은 System 보드에만 + 지속 condition 반복 토스트 억제. Requirements v1.0 APPROVED (Q1=A 주기 스냅샷 / Q2=A `events.synced` 마커 / Q3=A Dashboard 활성 기반 / Q4=A 조건부 재조회). Plan(S1~S10) APPROVED → **Part 2 Generation 진행 중.** docs: `construction/alert-ux-improvements/`.
+- **직전 Stage**: 개선 — 채팅 UX (지연 렌더 + 자동 스크롤/뱃지 + 완료 시 포커스 + 입력창 리디자인). Plan 승인(Q1=A/Q2=A/Q3=A, 계획 커밋 a3d5e05) → Part 2 Generation 완료(S1~S10 전체 [x]) — tsc/eslint/vitest 54/E2E 14/build 전부 통과, web_dist 갱신. **APPROVED & 커밋됨 (2026-07-04)**. plan: `construction/chat-ux-improvements/plan.md`, 요약: 동 폴더 code-summary.md.
 - **Next Stage**: Build and Test (전 유닛)
 - **직전 완료**: 토큰 usage hermes-native 전환 — 커밋 15b122e/353067a 반영 완료.
 - **Status**: 게이트웨이 프록시의 토큰 자체 집계/context_window/per-turn/ContextBar 전부 제거(Revision 1도 되돌림). TrafficStats는 requests/errors/latency만 유지. 대시보드=agent별 hermes 세션 usage 합(fan-out), 채팅=활성 세션 usage(turn 종료시 refreshSessions 갱신). ruff/mypy/pytest 474 + web typecheck/lint/vitest46 통과, vite build web_dist 갱신. 실기 fan-out 합산 확인. 조사결론: hermes /messages의 per-message token_count는 채우는 설정 없음(항상 null), 세션 단위 usage만 노출.
