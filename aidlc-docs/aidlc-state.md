@@ -50,8 +50,8 @@ Order: U1 → U2 → U3 → U4
 - [x] U1 NFR Design — APPROVED (Infrastructure Design은 U1 스킵)
 - [x] U1 Code Generation — APPROVED & committed d5bec4c (105 tests)
 - [x] U2 Daemon — APPROVED & committed (proxy/control/daemon.py, 347 tests, ruff/mypy strict)
-- [ ] U3 CLI — FD / NFR Req / NFR Design APPROVED; Code Generation complete (431 tests; awaiting approval)
-- [ ] U4 Web UI — pending
+- [x] U3 CLI — APPROVED & committed a4ad6ae (431 tests; 이후 rootless docker 모델 하드닝 dd23bea/4a42d34, 461 tests)
+- [ ] U4 Web UI — FD APPROVED (2026-07-03); NFR Requirements IN PROGRESS
 - [ ] NFR Requirements — EXECUTE per-unit
 - [ ] NFR Design — EXECUTE per-unit
 - [ ] Infrastructure Design — CONDITIONAL per-unit
@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U3 CLI — Code Generation (완료, 승인 게이트)
-- **Next Stage**: U4 Web UI per-unit loop
-- **Status**: U3 코드 생성·로컬 검증 완료 (431 tests, ruff/mypy strict)
+- **Current Stage**: U4 Web UI — Code Generation Part 1 (계획 수립)
+- **Next Stage**: U4 Code Generation Part 2 (생성) → Build and Test
+- **Status**: U4 FD/NFR Requirements/NFR Design 전부 APPROVED (2026-07-03). Infrastructure Design 스킵 확정. 설계 문서 커밋 후 코드 생성 계획 수립 중
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env
