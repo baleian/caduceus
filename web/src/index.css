@@ -12,14 +12,15 @@
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  --color-surface: #f6f7fb;
-  --color-panel: #ffffff;
-  --color-panel-2: #eef0f7;
-  --color-edge: #e3e6ef;
-  --color-edge-strong: #cdd2e0;
-  --color-ink: #171a26;
-  --color-ink-dim: #5d6478;
-  --color-ink-faint: #9aa1b5;
+  /* light palette: warm organic paper tones — no pure white, low-glare cream */
+  --color-surface: #f1ede2;
+  --color-panel: #faf7ee;
+  --color-panel-2: #e9e4d5;
+  --color-edge: #dcd5c2;
+  --color-edge-strong: #c4baa0;
+  --color-ink: #2e2a21;
+  --color-ink-dim: #6d6452;
+  --color-ink-faint: #9c927b;
   --color-accent: #7c6cf0;
   --color-accent-strong: #6553e8;
   --color-ok: #0e9f6e;
