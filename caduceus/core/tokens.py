@@ -10,10 +10,31 @@ import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 
+from caduceus.core.ports import FileStore
 from caduceus.core.types import validate_agent_name
 
 _TOKEN_RANDOM_HEX = 32  # 128 bits (S1)
+
+ADMIN_TOKEN_FILE = "admin.token"  # noqa: S105 - file NAME, not a credential
+_ADMIN_TOKEN_BYTES = 32
+
+
+def load_or_create_admin_token(caduceus_home: Path, files: FileStore) -> str:
+    """Admin API token (FD6): CSPRNG at first use, stored 0600.
+
+    Lives in core (not control) so the CLI's ``init`` can create it without
+    importing the daemon planes (CLI-D1/D3); control.auth delegates here.
+    """
+    path = caduceus_home / ADMIN_TOKEN_FILE
+    if files.exists(path):
+        token = files.read_text(path).strip()
+        if token:
+            return token
+    token = secrets.token_hex(_ADMIN_TOKEN_BYTES)
+    files.write_text_atomic(path, token + "\n", mode=0o600)
+    return token
 
 
 @dataclass(frozen=True)

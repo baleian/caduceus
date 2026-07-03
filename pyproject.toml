@@ -11,12 +11,13 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13",
 ]
 
 [project.scripts]
 caduceusd = "caduceus.daemon:main"
-# caduceus CLI entry point is added in U3:
-# caduceus = "caduceus.cli.main:main"
+caduceus = "caduceus.cli.main:main"
 
 [dependency-groups]
 dev = [
@@ -45,7 +46,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S108"] # asserts and tmp paths are fine in tests
+"tests/**" = ["S101", "S105", "S106", "S108"] # asserts, fake tokens, tmp paths are fine in tests
 
 [tool.mypy]
 strict = true

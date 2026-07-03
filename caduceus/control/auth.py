@@ -8,30 +8,22 @@ only public path.
 from __future__ import annotations
 
 import hmac
-import secrets
-from pathlib import Path
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from caduceus.core.ports import FileStore
+from caduceus.core.tokens import ADMIN_TOKEN_FILE, load_or_create_admin_token
 
-ADMIN_TOKEN_FILE = "admin.token"  # noqa: S105 - file NAME, not a credential
-_TOKEN_BYTES = 32
+__all__ = [
+    "ADMIN_TOKEN_FILE",
+    "AdminAuth",
+    "AdminAuthMiddleware",
+    "load_or_create_admin_token",
+]
+
 _PUBLIC_PATHS = frozenset({"/healthz"})
 _PROTECTED_PREFIXES = ("/api/", "/agents/")
-
-
-def load_or_create_admin_token(caduceus_home: Path, files: FileStore) -> str:
-    path = caduceus_home / ADMIN_TOKEN_FILE
-    if files.exists(path):
-        token = files.read_text(path).strip()
-        if token:
-            return token
-    token = secrets.token_hex(_TOKEN_BYTES)
-    files.write_text_atomic(path, token + "\n", mode=0o600)
-    return token
 
 
 class AdminAuth:
