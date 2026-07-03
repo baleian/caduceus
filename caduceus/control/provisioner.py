@@ -194,9 +194,6 @@ class Provisioner:
             await self._hermes.remove_containers(profile)
 
         async def profile_delete() -> None:
-            # rootless docker: everything in the profile tree is user-owned
-            # (container root == daemon user), so the native hermes delete
-            # needs no privileged cleanup
             await self._hermes.delete_profile(profile)
 
         async def registry_remove() -> None:

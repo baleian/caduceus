@@ -95,18 +95,8 @@ def doctor(ctx: typer.Context) -> None:
 
     state = get_state(ctx)
     renderer = get_renderer(ctx)
-    docker_env: dict[str, str] | None = None
-    try:  # docker.host (rootless sandbox daemon) — same view the daemon uses
-        from caduceus.core.config import CaduceusConfigStore
-
-        store = CaduceusConfigStore(state.home / "config.yaml", RealFileStore())
-        if store.exists() and (host := store.load().docker.host):
-            docker_env = {"DOCKER_HOST": host}
-    except Exception:  # noqa: BLE001 - doctor must always run; checks will tell
-        docker_env = None
     adapter = HermesAdapter(
         RealCommandRunner(), RealFileStore(), hermes_home=Path.home() / ".hermes",
-        env=docker_env,
     )
     report = asyncio.run(adapter.preflight())
     preflight_checks = [(c.name, c.ok, c.detail) for c in report.checks]

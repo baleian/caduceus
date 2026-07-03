@@ -17,7 +17,6 @@ verified against hermes source (hermes-research.md):
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,19 +75,15 @@ class HermesAdapter:
         hermes_home: Path,
         hermes_bin: str = "hermes",
         docker_bin: str = "docker",
-        env: dict[str, str] | None = None,
     ) -> None:
         self._runner = runner
         self._files = files
         self._home = hermes_home.expanduser()
         self._hermes = hermes_bin
         self._docker = docker_bin
-        # Extra process env for every CLI invocation — carries DOCKER_HOST so
-        # docker calls hit the configured (rootless) daemon, not the ambient one.
-        self._env = env or None
 
     async def _run(self, argv: list[str], *, timeout_s: float) -> Any:
-        return await self._runner.run(argv, timeout_s=timeout_s, env=self._env)
+        return await self._runner.run(argv, timeout_s=timeout_s)
 
     # -- paths ---------------------------------------------------------------
 
@@ -338,7 +333,6 @@ class HermesAdapter:
         checks.append(
             DoctorCheck("docker-daemon", docker is not None, docker or "docker daemon unreachable")
         )
-        checks.append(await self._check_rootless())
         checks.append(
             DoctorCheck(
                 "hermes-home",
@@ -347,45 +341,6 @@ class HermesAdapter:
             )
         )
         return DoctorReport(checks=checks)
-
-    async def _check_rootless(self) -> DoctorCheck:
-        """The sandbox engine must map container-root writes to the host user.
-
-        With a plain rootful daemon, container root writes root-owned files
-        into the bind mounts (workspace, sandbox home) — artifacts the host
-        user cannot edit and profile deletion cannot remove without
-        privileged cleanup. Two setups dissolve that problem class:
-
-        - Linux (incl. WSL2): a ROOTLESS daemon — container root == the
-          daemon-owning user. Requires the ``uidmap`` package once (rootless
-          docker's own prerequisite, not a Caduceus component).
-        - macOS: any VM-based engine (Docker Desktop, OrbStack, colima) —
-          the VM file-sharing layer (VirtioFS et al.) already maps bind-mount
-          ownership to the host user, so rootless-ness is irrelevant there.
-
-        Creation refuses anything else.
-        """
-        if sys.platform == "darwin":
-            return DoctorCheck(
-                "docker-rootless", True,
-                "macOS VM engine — bind mounts map to the host user natively",
-            )
-        try:
-            result = await self._run(
-                [self._docker, "info", "--format", "{{json .SecurityOptions}}"],
-                timeout_s=10.0,
-            )
-        except Exception:
-            return DoctorCheck("docker-rootless", False, "docker daemon unreachable")
-        rootless = result.ok and "name=rootless" in result.stdout
-        return DoctorCheck(
-            "docker-rootless",
-            rootless,
-            "rootless daemon" if rootless else (
-                "sandbox docker daemon is not rootless — set docker.host to a "
-                "rootless socket (e.g. unix:///run/user/<uid>/docker.sock)"
-            ),
-        )
 
     async def _try_version(self, argv: list[str]) -> str | None:
         try:

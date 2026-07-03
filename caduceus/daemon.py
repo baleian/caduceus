@@ -151,12 +151,9 @@ def build_daemon(
     admin_token = load_or_create_admin_token(caduceus_home, files)
     auth = AdminAuth(admin_token)
 
-    # DOCKER_HOST for the rootless sandbox daemon — reaches both our own
-    # docker calls (adapter) and every hermes gateway child (manager).
-    docker_env = {"DOCKER_HOST": config.docker.host} if config.docker.host else None
-    hermes = HermesAdapter(runner, files, hermes_home=hermes_home, env=docker_env)
+    hermes = HermesAdapter(runner, files, hermes_home=hermes_home)
     workspaces = WorkspaceManager(caduceus_home / "workspaces", files)
-    manager = GatewayProcessManager(spawner, clock, events, env=docker_env)
+    manager = GatewayProcessManager(spawner, clock, events)
     traffic = TrafficStats(since_iso=clock.now_iso())
     upstream = UpstreamClient(config.upstream, transport=upstream_transport)
     proxy_service = ProxyService(resolver, upstream, traffic, events, clock)

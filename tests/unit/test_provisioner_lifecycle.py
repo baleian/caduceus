@@ -101,8 +101,6 @@ class Harness:
                 return CommandResult(0, "hermes 1.0\n", "")
             if argv[:2] == ["docker", "version"]:
                 return CommandResult(0, "27.0\n", "")
-            if argv[:2] == ["docker", "info"]:
-                return CommandResult(0, '["name=rootless","name=cgroupns"]\n', "")
             if argv[:2] == ["docker", "ps"]:
                 return CommandResult(0, "", "")
             return CommandResult(0, "", "")
@@ -240,8 +238,7 @@ async def test_holder_swap_renders_new_default_model() -> None:
 
 
 async def test_managed_config_renders_plain_root_backend() -> None:
-    """Rootless-docker model (decision 2026-07-03, final): the sandbox runs
-    as container root (apt must work) on a rootless daemon — no ownership
+    """The sandbox runs as container root (apt must work) — no ownership
     workarounds (host-user switch, tmpfs mountpoint guard, BASH_ENV umask)
     may reappear in the managed config."""
     h = Harness()
@@ -266,31 +263,7 @@ async def test_remove_pipeline_has_no_privileged_scrub() -> None:
     assert [s["name"] for s in snap["steps"]] == [
         "gateway-stop", "containers-remove", "profile-delete", "registry-remove",
     ]
-    # rootless: the profile tree is user-owned — docker is never borrowed
     assert not any("chown" in c for c in h.runner.calls)
-
-
-async def test_create_refuses_rootful_docker_daemon() -> None:
-    """Preflight gate: with a rootful daemon every artifact would be
-    root-owned on the host — creation must refuse and name the check."""
-    h = Harness()
-
-    async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
-        h.runner.calls.append(list(argv))
-        if argv[:2] == ["hermes", "--version"]:
-            return CommandResult(0, "hermes 1.0\n", "")
-        if argv[:2] == ["docker", "version"]:
-            return CommandResult(0, "27.0\n", "")
-        if argv[:2] == ["docker", "info"]:
-            return CommandResult(0, '["name=cgroupns"]\n', "")  # rootful
-        return CommandResult(0, "", "")
-
-    h.runner.run = run  # type: ignore[method-assign]
-    job = h.provisioner.create_agent(AgentSpec(name="coder"))
-    await h.drain()
-    snap = h.jobs.get(job.id).snapshot()
-    assert snap["state"] == "failed"
-    assert "docker-rootless" in (snap.get("error") or "")
 
 
 async def test_create_seeds_api_server_toolsets_and_unattended_defaults() -> None:

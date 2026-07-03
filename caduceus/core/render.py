@@ -77,10 +77,7 @@ def managed_config(
         # any prior explicit mount on existing profiles via merge/drift.
         #
         # The sandbox runs as container root so system package managers work
-        # (F3). The docker daemon itself is ROOTLESS (preflight-enforced):
-        # container root maps to the daemon user on the host, so everything
-        # written into the workspace bind mount is host-owned — no ownership
-        # workarounds needed here.
+        # (F3) — no ownership workarounds in the managed config.
         "cwd": workspace_dir,
         "docker_mount_cwd_to_workspace": True,
         "docker_volumes": [],

@@ -230,25 +230,6 @@ class ReconcileConfig(BaseModel):
     interval_s: float = Field(default=30.0, gt=0)
 
 
-class DockerConfig(BaseModel):
-    """Which docker daemon runs the agent sandboxes.
-
-    Caduceus requires a ROOTLESS daemon (preflight-enforced): container root
-    maps to the daemon-owning user, so the agent keeps full in-container
-    privileges (apt-get et al.) while every artifact it writes into bind
-    mounts (workspace, sandbox home) is host-owned by the user — no
-    privileged cleanup, no permission workarounds.
-
-    ``host`` is exported as DOCKER_HOST to the daemon's own docker calls and
-    to every hermes gateway it spawns. ``null`` inherits the ambient
-    environment (useful when the user's default context is already rootless).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    host: str | None = None  # e.g. unix:///run/user/1000/docker.sock
-
-
 class CaduceusConfig(BaseModel):
     """``~/.caduceus/config.yaml`` document."""
 
@@ -258,7 +239,6 @@ class CaduceusConfig(BaseModel):
     upstream: UpstreamConfig
     agents: AgentDefaults = Field(default_factory=AgentDefaults)
     reconcile: ReconcileConfig = Field(default_factory=ReconcileConfig)
-    docker: DockerConfig = Field(default_factory=DockerConfig)
 
 
 ProcessState = Literal["starting", "running", "stopping", "exited", "crashlooping"]

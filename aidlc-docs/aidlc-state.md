@@ -63,7 +63,7 @@ Order: U1 → U2 → U3 → U4
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: U4 완료·커밋(8641160). 운영 이슈 진단 중 (browser_navigate)
+- **Current Stage**: U4 완료·커밋(8641160). 유지보수: docker-rootless 완전 제거 (2026-07-03, audit.md 참조)
 - **Next Stage**: Build and Test (전 유닛 — 실물 integration 포함)
-- **Status**: U4 커밋 완료(사용자 지시 2026-07-03 = 승인). 현재: hermes browser_navigate 도구 이슈 조사 (stealth_warning/Browserbase 문구, 동작 불량 보고)
+- **Status**: docker-rootless 검사/설정(DockerConfig)/DOCKER_HOST 플럼빙 전부 제거, 475 tests passed. 알려진 회귀(승인됨): rootful 데몬에서 artifacts 호스트 소유권 문제 재발 가능. 이전 조사: hermes browser_navigate 도구 이슈 (stealth_warning/Browserbase 문구, 동작 불량 보고)
 - **Key Decisions**: AD-1 profile별 gateway, AD-2 기본 host 네트워크+에이전트별 격리 옵션, AD-3 자체 Web UI, AD-4 Python 3.11+, AD-5 단일 데몬 2-플레인, AD-6 토큰=.env

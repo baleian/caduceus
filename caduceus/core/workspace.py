@@ -15,9 +15,7 @@ from caduceus.core.errors import WorkspaceError
 from caduceus.core.ports import FileStore
 from caduceus.core.types import validate_agent_name
 
-# Private to the user. The sandbox docker daemon is rootless (preflight-
-# enforced), so container root == this user on the host and every artifact
-# the agent writes here is natively user-owned — no group/setgid machinery.
+# Private to the user.
 _WORKSPACE_DIR_MODE = 0o700
 
 
