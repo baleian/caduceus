@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
 from ruamel.yaml import YAML
@@ -31,6 +32,42 @@ def network_extra_args(mode: NetworkMode) -> list[str]:
         return list(_NETWORK_EXTRA_ARGS[mode])
     except KeyError:
         raise DomainValidationError(f"unknown network_mode {mode!r}") from None
+
+
+def terminal_env(spec: AgentSpec, workspace_dir: str) -> dict[str, str]:
+    """``TERMINAL_*`` env for the gateway process, derived from the SAME source
+    as ``managed_config``'s terminal section (they can never disagree).
+
+    hermes' ``terminal_tool._get_env_config()`` resolves the terminal backend,
+    network flags, image, cwd and persistence EXCLUSIVELY from ``TERMINAL_*``
+    environment variables — falling back to a *local* backend with no extra
+    docker args when they are absent. A per-profile ``hermes gateway`` does not
+    reliably bridge these from the profile ``config.yaml``, so Caduceus injects
+    them explicitly when it spawns the gateway (ports spawner ``env=``).
+    Without this, the agent's ``default`` terminal sandbox comes up on hermes'
+    default *bridge* network instead of the configured ``network_mode``.
+
+    Values (types/format) match hermes' ``_parse_env_var`` expectations: bools
+    are lowercase ``"true"``/``"false"``; list-valued keys are JSON strings.
+    """
+    env: dict[str, str] = {
+        "TERMINAL_ENV": "docker",
+        "TERMINAL_DOCKER_IMAGE": spec.docker_image,
+        "TERMINAL_DOCKER_EXTRA_ARGS": json.dumps(network_extra_args(spec.network_mode)),
+        "TERMINAL_CONTAINER_PERSISTENT": "true",
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",
+        "TERMINAL_CWD": workspace_dir,
+        # Mirror managed_config's pinned ``docker_volumes: []`` so hermes does
+        # not skip its cwd auto-mount over a stale explicit ``:/workspace`` entry.
+        "TERMINAL_DOCKER_VOLUMES": json.dumps([]),
+    }
+    if spec.cpu is not None:
+        env["TERMINAL_CONTAINER_CPU"] = str(spec.cpu)
+    if spec.memory_mb is not None:
+        env["TERMINAL_CONTAINER_MEMORY"] = str(spec.memory_mb)
+    if spec.disk_mb is not None:
+        env["TERMINAL_CONTAINER_DISK"] = str(spec.disk_mb)
+    return env
 
 
 def managed_config(

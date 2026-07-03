@@ -10,6 +10,7 @@ from caduceus.core.render import (
     managed_config,
     merge_config_text,
     set_env_lines,
+    terminal_env,
 )
 from caduceus.core.types import AgentSpec
 
@@ -59,6 +60,42 @@ def test_merge_preserves_comments_and_unmanaged_sections() -> None:
     assert list(loaded["terminal"]["docker_extra_args"]) == [
         "--add-host=host.docker.internal:host-gateway"
     ]
+
+
+def test_terminal_env_host_mirrors_managed_config() -> None:
+    env = terminal_env(
+        AgentSpec(name="coder", network_mode="host", docker_image="img:1"),
+        "/home/u/.caduceus/workspaces/coder",
+    )
+    assert env["TERMINAL_ENV"] == "docker"
+    assert env["TERMINAL_DOCKER_IMAGE"] == "img:1"
+    assert env["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
+    assert env["TERMINAL_CONTAINER_PERSISTENT"] == "true"
+    assert env["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "true"
+    assert env["TERMINAL_CWD"] == "/home/u/.caduceus/workspaces/coder"
+    assert env["TERMINAL_DOCKER_VOLUMES"] == "[]"
+
+
+def test_terminal_env_network_modes() -> None:
+    def extra(mode: str) -> str:
+        return terminal_env(AgentSpec(name="a", network_mode=mode), "/ws")[  # type: ignore[arg-type]
+            "TERMINAL_DOCKER_EXTRA_ARGS"
+        ]
+
+    assert extra("host") == '["--network=host"]'
+    assert extra("bridge_hostgw") == '["--add-host=host.docker.internal:host-gateway"]'
+    assert extra("none") == '["--network=none"]'
+
+
+def test_terminal_env_resources_optional() -> None:
+    bare = terminal_env(AgentSpec(name="a"), "/ws")
+    assert "TERMINAL_CONTAINER_CPU" not in bare
+    assert "TERMINAL_CONTAINER_MEMORY" not in bare
+    assert "TERMINAL_CONTAINER_DISK" not in bare
+    sized = terminal_env(AgentSpec(name="a", cpu=2, memory_mb=2048, disk_mb=10240), "/ws")
+    assert sized["TERMINAL_CONTAINER_CPU"] == "2.0"
+    assert sized["TERMINAL_CONTAINER_MEMORY"] == "2048"
+    assert sized["TERMINAL_CONTAINER_DISK"] == "10240"
 
 
 def test_merge_from_empty_creates_document() -> None:

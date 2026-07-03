@@ -30,7 +30,12 @@ from caduceus.core.errors import (
     NotFoundError,
 )
 from caduceus.core.ports import CommandRunner, FileStore
-from caduceus.core.render import managed_config, merge_config_text, set_env_lines
+from caduceus.core.render import (
+    managed_config,
+    merge_config_text,
+    set_env_lines,
+    terminal_env,
+)
 from caduceus.core.types import AgentSpec
 
 HERMES_TIMEOUT_S = 60.0  # E1 / RESILIENCY-10
@@ -357,6 +362,14 @@ class HermesAdapter:
 
     def gateway_argv(self, profile: str) -> list[str]:
         return [self._hermes, "-p", profile, "gateway"]
+
+    def gateway_env(self, spec: AgentSpec, workspace_dir: str) -> dict[str, str]:
+        """``TERMINAL_*`` env injected into the gateway process so hermes'
+        terminal_tool resolves the docker backend + ``network_mode`` +
+        persistence from env (it reads these ONLY from ``TERMINAL_*`` vars, never
+        from the profile config.yaml directly). Derived from the same source as
+        the managed config — see ``render.terminal_env``."""
+        return terminal_env(spec, workspace_dir)
 
     # -- preflight (logic §7) ----------------------------------------------------
 

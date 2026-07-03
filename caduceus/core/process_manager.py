@@ -39,6 +39,10 @@ def next_backoff_s(attempt: int) -> float:
 class _Managed:
     agent: str
     argv: list[str]
+    # Injected into the gateway process env on every spawn — initial AND
+    # backoff-restart (both go through _spawn), so a restarted gateway keeps
+    # the same TERMINAL_* terminal config.
+    env: dict[str, str] | None = None
     state: ProcessState = "starting"
     handle: ProcessHandle | None = None
     restart_count: int = 0
@@ -92,13 +96,19 @@ class GatewayProcessManager:
 
     # -- lifecycle ----------------------------------------------------------
 
-    async def start(self, agent: str, argv: list[str]) -> None:
+    async def start(
+        self,
+        agent: str,
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
         if self._shutting_down:
             raise ConflictError("daemon is shutting down")
         existing = self._managed.get(agent)
         if existing and existing.state in ("starting", "running", "stopping"):
             raise ConflictError(f"gateway for {agent!r} already running")
-        managed = _Managed(agent=agent, argv=list(argv))
+        managed = _Managed(agent=agent, argv=list(argv), env=env)
         self._managed[agent] = managed
         await self._spawn(managed)
 
@@ -134,7 +144,7 @@ class GatewayProcessManager:
 
     async def _spawn(self, managed: _Managed) -> None:
         managed.state = "starting"
-        handle = await self._spawner.spawn(managed.argv)
+        handle = await self._spawner.spawn(managed.argv, env=managed.env)
         managed.handle = handle
         managed.started_at_mono = self._clock.monotonic()
         managed.state = "running"

@@ -102,6 +102,7 @@ class Daemon:
                     await self.manager.start(
                         record.spec.name,
                         self.hermes.gateway_argv(record.profile_name),
+                        env=self.hermes.gateway_env(record.spec, record.workspace_dir),
                     )
 
     async def shutdown(self) -> None:

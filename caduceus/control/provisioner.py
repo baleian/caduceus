@@ -162,7 +162,11 @@ class Provisioner:
             self._invalidate_tokens()
 
         async def gateway_start() -> None:
-            await self._manager.start(spec.name, self._hermes.gateway_argv(profile))
+            await self._manager.start(
+                spec.name,
+                self._hermes.gateway_argv(profile),
+                env=self._hermes.gateway_env(spec, state.workspace_dir),
+            )
             self._registry.set_desired_state(spec.name, "running")
 
         async def health_wait() -> None:

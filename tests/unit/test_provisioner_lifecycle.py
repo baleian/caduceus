@@ -33,11 +33,15 @@ class FakeManager:
 
     def __init__(self) -> None:
         self.started: list[tuple[str, list[str]]] = []
+        self.started_env: list[dict[str, str] | None] = []
         self.stopped: list[str] = []
         self.managed: dict[str, str] = {}  # agent -> state
 
-    async def start(self, agent: str, argv: list[str]) -> None:
+    async def start(
+        self, agent: str, argv: list[str], *, env: dict[str, str] | None = None
+    ) -> None:
         self.started.append((agent, argv))
+        self.started_env.append(env)
         self.managed[agent] = "running"
 
     async def stop(self, agent: str) -> None:
@@ -143,6 +147,13 @@ async def test_create_pipeline_happy_path() -> None:
     assert "OPENAI_API_KEY=cad-coder-" in env_text
 
     assert h.manager.started and h.manager.started[0][0] == "coder"
+    # gateway spawned with spec-derived TERMINAL_* env so the default terminal
+    # sandbox honors network_mode=host (FR-1/FR-5) instead of hermes' bridge.
+    gw_env = h.manager.started_env[0]
+    assert gw_env is not None
+    assert gw_env["TERMINAL_ENV"] == "docker"
+    assert gw_env["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
+    assert gw_env["TERMINAL_CWD"] == record.workspace_dir
     assert h.invalidations == 1  # token cache rebuilt after registry-add
 
 

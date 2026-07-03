@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import string
 
 from hypothesis import given
@@ -13,6 +14,7 @@ from caduceus.core.render import (
     merge_config_text,
     network_extra_args,
     set_env_lines,
+    terminal_env,
 )
 from caduceus.core.types import AgentSpec
 from tests.property.strategies import agent_specs
@@ -96,6 +98,40 @@ def test_p7_env_set_preserves_other_lines(updates: dict[str, str]) -> None:
     for key, value in updates.items():
         if key != "UNRELATED_KEY":
             assert f"{key}={value}" in result
+
+
+@given(agent_specs())
+def test_terminal_env_consistent_with_managed_config(spec: AgentSpec) -> None:
+    """The injected TERMINAL_* env is derived from the same source as the
+    managed config, so gateway-env and config.yaml can never disagree; and it
+    is total (every value a raw string hermes can read from os.environ)."""
+    ws = f"/home/u/.caduceus/workspaces/{spec.name}"
+    env = terminal_env(spec, ws)
+    terminal = make_managed(spec)["terminal"]
+
+    # totality: keys and values are plain strings (no exceptions across specs)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+
+    # network flags: env JSON decodes to exactly what config renders
+    assert (
+        json.loads(env["TERMINAL_DOCKER_EXTRA_ARGS"])
+        == network_extra_args(spec.network_mode)
+        == list(terminal["docker_extra_args"])
+    )
+
+    # backend/image/persistence/cwd mirror the managed terminal section
+    assert env["TERMINAL_ENV"] == "docker" == terminal["backend"]
+    assert env["TERMINAL_DOCKER_IMAGE"] == terminal["docker_image"]
+    assert (env["TERMINAL_CONTAINER_PERSISTENT"] == "true") is terminal["container_persistent"]
+    assert env["TERMINAL_CWD"] == terminal["cwd"] == ws
+    assert (
+        env["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "true"
+    ) is terminal["docker_mount_cwd_to_workspace"]
+
+    # optional resource keys appear iff the spec set them
+    assert ("TERMINAL_CONTAINER_CPU" in env) is (spec.cpu is not None)
+    assert ("TERMINAL_CONTAINER_MEMORY" in env) is (spec.memory_mb is not None)
+    assert ("TERMINAL_CONTAINER_DISK" in env) is (spec.disk_mb is not None)
 
 
 @given(st.sampled_from(["host", "bridge_hostgw", "none"]))

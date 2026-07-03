@@ -88,7 +88,11 @@ class LifecycleService:
 
     async def start(self, name: str) -> None:
         record = self._registry.get(name)
-        await self._manager.start(name, self._hermes.gateway_argv(record.profile_name))
+        await self._manager.start(
+            name,
+            self._hermes.gateway_argv(record.profile_name),
+            env=self._hermes.gateway_env(record.spec, record.workspace_dir),
+        )
         self._registry.set_desired_state(name, "running")
 
     async def stop(self, name: str) -> None:

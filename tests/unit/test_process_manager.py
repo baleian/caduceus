@@ -62,9 +62,11 @@ class FakeSpawner:
     def __init__(self) -> None:
         self.spawned: list[FakeHandle] = []
         self.argvs: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
 
     async def spawn(self, argv: list[str], *, env: dict[str, str] | None = None) -> FakeHandle:
         self.argvs.append(list(argv))
+        self.envs.append(env)
         handle = FakeHandle()
         self.spawned.append(handle)
         return handle
@@ -93,6 +95,27 @@ async def test_start_spawns_and_reports_running() -> None:
     assert info.pid == spawner.spawned[0].pid
     assert spawner.argvs == [ARGV]
     assert any(e.kind == "process.state" for e in sink.events)
+    await manager.shutdown()
+
+
+async def test_start_injects_env_into_spawn() -> None:
+    manager, spawner, _, _ = make_manager()
+    env = {"TERMINAL_ENV": "docker", "TERMINAL_DOCKER_EXTRA_ARGS": '["--network=host"]'}
+    await manager.start("coder", ARGV, env=env)
+    assert spawner.envs == [env]
+    await manager.shutdown()
+
+
+async def test_restart_reuses_injected_env() -> None:
+    manager, spawner, _, _ = make_manager()
+    env = {"TERMINAL_ENV": "docker", "TERMINAL_DOCKER_EXTRA_ARGS": '["--network=host"]'}
+    await manager.start("coder", ARGV, env=env)
+    spawner.spawned[0].exit_now(1)
+    await drain()
+    # backoff-restart re-spawns via the same _spawn, so the stored env rides
+    # along — a restarted gateway keeps its TERMINAL_* terminal config (FR-4).
+    assert len(spawner.envs) == 2
+    assert spawner.envs[1] == env
     await manager.shutdown()
 
 
