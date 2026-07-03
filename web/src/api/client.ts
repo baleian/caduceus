@@ -184,6 +184,16 @@ export class ApiClient {
     })
   }
 
+  getAllowPrivateUrls(name: string): Promise<{ allow_private_urls: boolean }> {
+    return this.request('GET', `/api/agents/${encodeURIComponent(name)}/allow-private-urls`)
+  }
+
+  putAllowPrivateUrls(name: string, allow: boolean): Promise<void> {
+    return this.request('PUT', `/api/agents/${encodeURIComponent(name)}/allow-private-urls`, {
+      json: { allow },
+    })
+  }
+
   getToolsets(name: string): Promise<{ toolsets: string[] }> {
     return this.request('GET', `/api/agents/${encodeURIComponent(name)}/toolsets`)
   }

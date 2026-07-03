@@ -27,22 +27,25 @@ export function SettingsTab(props: { agent: string }): ReactNode {
   const [toolsetsText, setToolsetsText] = useState('')
   const [toolsetsDirty, setToolsetsDirty] = useState(false)
   const [approvals, setApprovals] = useState<ApprovalsMode>('off')
+  const [allowPrivateUrls, setAllowPrivateUrls] = useState(false)
   const [needsRestart, setNeedsRestart] = useState(false)
   const [rotateOpen, setRotateOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [soulRes, skillsRes, toolsetsRes, approvalsRes] = await Promise.all([
+      const [soulRes, skillsRes, toolsetsRes, approvalsRes, allowRes] = await Promise.all([
         client.getSoul(props.agent),
         client.getSkills(props.agent),
         client.getToolsets(props.agent),
         client.getApprovals(props.agent),
+        client.getAllowPrivateUrls(props.agent),
       ])
       setSoul(soulRes.content)
       setSkills(skillsRes.skills)
       setToolsetsText(renderToolsetsText(toolsetsRes.toolsets))
       setApprovals(approvalsRes.mode)
+      setAllowPrivateUrls(allowRes.allow_private_urls)
       setLoadError(null)
     } catch (error) {
       setLoadError(error instanceof ApiError ? error.message : 'failed to load settings')
@@ -107,6 +110,18 @@ export function SettingsTab(props: { agent: string }): ReactNode {
     } catch (error) {
       setApprovals(previous)
       toast('error', error instanceof ApiError ? error.message : 'approvals save failed')
+    }
+  }
+
+  async function saveAllowPrivateUrls(allow: boolean): Promise<void> {
+    const previous = allowPrivateUrls
+    setAllowPrivateUrls(allow) // optimistic (WPT-7); revert on failure
+    try {
+      await client.putAllowPrivateUrls(props.agent, allow)
+      editApplied()
+    } catch (error) {
+      setAllowPrivateUrls(previous)
+      toast('error', error instanceof ApiError ? error.message : 'private-URL policy save failed')
     }
   }
 
@@ -250,6 +265,26 @@ export function SettingsTab(props: { agent: string }): ReactNode {
           <option value="smart">smart</option>
           <option value="manual">manual</option>
         </select>
+      </Card>
+
+      <Card className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold">Browser private URLs</h2>
+          <p className="mt-0.5 text-xs text-ink-dim">
+            let the browser tool reach localhost / private addresses (SSRF opt-in)
+          </p>
+        </div>
+        <button
+          data-testid="settings-allow-private-urls-toggle"
+          role="switch"
+          aria-checked={allowPrivateUrls}
+          onClick={() => void saveAllowPrivateUrls(!allowPrivateUrls)}
+          className={`rounded-full px-3 py-0.5 text-xs font-medium transition-colors ${
+            allowPrivateUrls ? 'bg-ok/15 text-ok' : 'bg-ink-dim/15 text-ink-dim'
+          }`}
+        >
+          {allowPrivateUrls ? 'allowed' : 'blocked'}
+        </button>
       </Card>
 
       <Card className="flex items-center justify-between gap-4">

@@ -133,6 +133,11 @@ def managed_config(
         "model": model,
         "terminal": terminal,
         "approvals": approvals,
+        # Browser SSRF policy (hermes tools/url_safety.py). Default False keeps
+        # the browser tool from reaching private/loopback/LAN URLs; opting in
+        # lets a host-networked agent browse local services. Rendered explicitly
+        # (not only when True) so toggling off clears a prior opt-in via drift.
+        "security": {"allow_private_urls": spec.allow_private_urls},
         # hermes ships hard_stop disabled; without it a model that wants a
         # missing capability can retry a failing/hallucinated tool call
         # forever. Bounded turns are non-negotiable for unattended agents.

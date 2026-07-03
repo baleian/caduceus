@@ -70,6 +70,12 @@ class AgentSpec(BaseModel):
     name: str
     docker_image: str = DEFAULT_DOCKER_IMAGE
     network_mode: NetworkMode = "host"  # AD-2 default
+    # Browser SSRF policy opt-in. hermes' browser tool blocks navigation to
+    # private/loopback/LAN addresses by default; enable (per-agent) so a
+    # host-networked agent can browse local services (e.g. a dashboard on
+    # localhost). Rendered as security.allow_private_urls. Cloud-metadata
+    # endpoints (169.254.169.254 …) stay hard-blocked regardless.
+    allow_private_urls: bool = False
     approvals_mode: ApprovalsMode = "off"  # unattended by default (see ApprovalsMode)
     cpu: float | None = Field(default=None, gt=0)
     memory_mb: int | None = Field(default=None, ge=256)

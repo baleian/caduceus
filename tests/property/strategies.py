@@ -39,6 +39,7 @@ def agent_specs() -> st.SearchStrategy[AgentSpec]:
             alphabet=string.ascii_letters + string.digits + ":/.-_", min_size=1, max_size=64
         ).filter(lambda s: s.strip()),
         network_mode=network_modes(),
+        allow_private_urls=st.booleans(),
         cpu=st.one_of(st.none(), st.floats(min_value=0.5, max_value=32, allow_nan=False)),
         memory_mb=st.one_of(st.none(), st.integers(min_value=256, max_value=1 << 20)),
         disk_mb=st.one_of(st.none(), st.integers(min_value=1024, max_value=1 << 22)),

@@ -43,6 +43,13 @@ def create(
     network: Annotated[
         str | None, typer.Option(help="network mode: host | bridge_hostgw | none")
     ] = None,
+    allow_private_urls: Annotated[
+        bool,
+        typer.Option(
+            "--allow-private-urls",
+            help="let the browser tool reach private/localhost URLs (SSRF opt-in)",
+        ),
+    ] = False,
     cpu: Annotated[float | None, typer.Option(help="cpu limit (cores)")] = None,
     memory: Annotated[int | None, typer.Option(help="memory limit (MB)")] = None,
     disk: Annotated[int | None, typer.Option(help="disk limit (MB)")] = None,
@@ -64,6 +71,8 @@ def create(
         spec["docker_image"] = image
     if network is not None:
         spec["network_mode"] = network
+    if allow_private_urls:
+        spec["allow_private_urls"] = True
     if cpu is not None:
         spec["cpu"] = cpu
     if memory is not None:
@@ -123,6 +132,7 @@ def status(ctx: typer.Context, name: str, json_output: JsonFlag = False) -> None
             ["container", str(agent_status.get("container", ""))],
             ["image", str(spec.get("docker_image", ""))],
             ["network", str(spec.get("network_mode", ""))],
+            ["allow_private_urls", str(spec.get("allow_private_urls", False))],
             ["api_port", str(record.get("api_port", ""))],
             ["workspace", str(record.get("workspace_dir", ""))],
             ["summary", str((agent_status.get("detail") or {}).get("summary", ""))],

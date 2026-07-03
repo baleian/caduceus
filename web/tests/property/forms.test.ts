@@ -60,6 +60,7 @@ describe('PU4-5 forms', () => {
           name: fc.string({ maxLength: 70 }),
           docker_image: fc.string({ maxLength: 600 }),
           network_mode: fc.string({ maxLength: 20 }),
+          allow_private_urls: fc.boolean(),
           cpu: fc.string({ maxLength: 10 }),
           memory_mb: fc.string({ maxLength: 10 }),
           persona: fc.string({ maxLength: 300 }),

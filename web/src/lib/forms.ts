@@ -24,6 +24,7 @@ export interface AgentFormValues {
   name: string
   docker_image: string
   network_mode: string
+  allow_private_urls: boolean
   cpu: string
   memory_mb: string
   persona: string

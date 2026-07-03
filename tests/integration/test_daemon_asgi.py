@@ -332,3 +332,36 @@ def test_approvals_mode_switch_updates_spec_and_profile_config() -> None:
             "/api/agents/appr/approvals", json={"mode": "yolo"}, headers=headers
         )
         assert bad.status_code == 422
+
+
+def test_allow_private_urls_toggle_updates_spec_and_profile_config() -> None:
+    daemon, files = make_daemon()
+    app = attach_lifespan(daemon)
+    with TestClient(app) as client:
+        headers = admin_headers(files)
+        created = client.post("/api/agents", json={"name": "pvt"}, headers=headers)
+        assert wait_job(client, headers, created.json()["job_id"])["state"] == "done"
+
+        # default: browser SSRF guard on
+        assert client.get(
+            "/api/agents/pvt/allow-private-urls", headers=headers
+        ).json() == {"allow_private_urls": False}
+        config_text = files.read_text(HERMES_HOME / "profiles" / "cad-pvt" / "config.yaml")
+        assert "allow_private_urls: false" in config_text
+
+        # opt in → spec + rendered config both updated
+        response = client.put(
+            "/api/agents/pvt/allow-private-urls", json={"allow": True}, headers=headers
+        )
+        assert response.status_code == 204
+        assert client.get(
+            "/api/agents/pvt/allow-private-urls", headers=headers
+        ).json() == {"allow_private_urls": True}
+        config_text = files.read_text(HERMES_HOME / "profiles" / "cad-pvt" / "config.yaml")
+        assert "allow_private_urls: true" in config_text
+
+        # non-bool rejected by the contract
+        bad = client.put(
+            "/api/agents/pvt/allow-private-urls", json={"allow": []}, headers=headers
+        )
+        assert bad.status_code == 422

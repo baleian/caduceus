@@ -20,6 +20,7 @@ export interface AgentRecord {
     name: string
     docker_image: string
     network_mode: NetworkMode
+    allow_private_urls: boolean
     approvals_mode: ApprovalsMode
     cpu: number | null
     memory_mb: number | null

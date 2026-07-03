@@ -205,6 +205,7 @@ export function AgentDetailPage(): ReactNode {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
               <Info label="image" value={record.spec.docker_image} wide />
               <Info label="network" value={record.spec.network_mode} />
+              <Info label="private URLs" value={record.spec.allow_private_urls ? 'allowed' : 'blocked'} />
               <Info label="approvals" value={record.spec.approvals_mode} />
               <Info label="cpu" value={record.spec.cpu === null ? '—' : String(record.spec.cpu)} />
               <Info

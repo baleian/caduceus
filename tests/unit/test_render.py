@@ -98,6 +98,16 @@ def test_terminal_env_resources_optional() -> None:
     assert sized["TERMINAL_CONTAINER_DISK"] == "10240"
 
 
+def test_managed_config_renders_security_allow_private_urls() -> None:
+    def sec(spec: AgentSpec) -> bool:
+        return managed_config(
+            spec, daemon_v1_url="http://x/v1", workspace_dir="/ws", default_model=None
+        )["security"]["allow_private_urls"]
+
+    assert sec(AgentSpec(name="a")) is False  # default: browser SSRF guard on
+    assert sec(AgentSpec(name="a", allow_private_urls=True)) is True
+
+
 def test_merge_from_empty_creates_document() -> None:
     merged = merge_config_text(None, make_managed())
     assert "provider: custom" in merged

@@ -25,6 +25,7 @@ const EMPTY_FORM: AgentFormValues = {
   name: '',
   docker_image: '',
   network_mode: 'host',
+  allow_private_urls: false,
   cpu: '',
   memory_mb: '',
   persona: '',
@@ -193,7 +194,7 @@ function CreateAgentPanel(props: {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
 
-  function set<K extends keyof AgentFormValues>(key: K, value: string): void {
+  function set<K extends keyof AgentFormValues>(key: K, value: AgentFormValues[K]): void {
     setValues((v) => ({ ...v, [key]: value }))
   }
 
@@ -206,6 +207,7 @@ function CreateAgentPanel(props: {
       const spec: Record<string, unknown> = { name: values.name.trim() }
       if (values.docker_image.trim()) spec['docker_image'] = values.docker_image.trim()
       if (values.network_mode !== 'host') spec['network_mode'] = values.network_mode
+      if (values.allow_private_urls) spec['allow_private_urls'] = true
       if (values.cpu.trim()) spec['cpu'] = Number(values.cpu)
       if (values.memory_mb.trim()) spec['memory_mb'] = Number(values.memory_mb)
       if (values.persona.trim()) spec['persona'] = values.persona
@@ -266,6 +268,17 @@ function CreateAgentPanel(props: {
               <option value="bridge_hostgw">bridge + host gateway</option>
               <option value="none">none</option>
             </select>
+          </Field>
+          <Field label="allow private URLs" error={undefined}>
+            <label className="flex items-center gap-2 text-sm text-ink-dim">
+              <input
+                type="checkbox"
+                data-testid="agent-create-allow-private-urls-input"
+                checked={values.allow_private_urls}
+                onChange={(e) => set('allow_private_urls', e.target.checked)}
+              />
+              let the browser reach localhost / private addresses
+            </label>
           </Field>
           <Field label="cpu" error={errors.cpu}>
             <input

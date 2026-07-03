@@ -59,6 +59,12 @@ class ApprovalsUpdate(BaseModel):
     mode: ApprovalsMode
 
 
+class AllowPrivateUrlsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allow: bool
+
+
 class ToolsetsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -228,6 +234,36 @@ def build_admin_router(
         try:
             record = registry.get(name)
             new_spec = record.spec.model_copy(update={"approvals_mode": body.mode})
+            registry.replace(record.model_copy(update={"spec": new_spec}))
+            hermes.apply_managed_config(
+                record.profile_name,
+                new_spec,
+                daemon_v1_url=f"http://127.0.0.1:{config.config.listen.port}/v1",
+                workspace_dir=record.workspace_dir,
+                default_model=config.config.upstream.default_model,
+            )
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None
+
+    @router.get("/api/agents/{name}/allow-private-urls")
+    async def get_allow_private_urls(name: str) -> Any:
+        try:
+            record = registry.get(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"allow_private_urls": record.spec.allow_private_urls}
+
+    @router.put(
+        "/api/agents/{name}/allow-private-urls", status_code=204, response_model=None
+    )
+    async def put_allow_private_urls(name: str, body: AllowPrivateUrlsUpdate) -> Any:
+        """Toggle the browser SSRF opt-in (security.allow_private_urls): update
+        the spec, then re-render the managed config so hermes picks it up on the
+        next gateway (re)start."""
+        try:
+            record = registry.get(name)
+            new_spec = record.spec.model_copy(update={"allow_private_urls": body.allow})
             registry.replace(record.model_copy(update={"spec": new_spec}))
             hermes.apply_managed_config(
                 record.profile_name,

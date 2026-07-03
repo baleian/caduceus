@@ -71,6 +71,7 @@ def test_p6_managed_keys_match_render(spec: AgentSpec) -> None:
     assert list(loaded["terminal"]["docker_extra_args"]) == network_extra_args(
         spec.network_mode
     )
+    assert loaded["security"]["allow_private_urls"] is spec.allow_private_urls
     assert loaded["foo"] == 1
 
 
