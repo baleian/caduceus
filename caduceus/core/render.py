@@ -13,6 +13,7 @@ import io
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import SingleQuotedScalarString
 
 from caduceus.core.errors import DomainValidationError
 from caduceus.core.types import AgentSpec, NetworkMode
@@ -55,17 +56,21 @@ def managed_config(
     if default_model:
         model["default"] = default_model
 
+    # approvals.mode MUST be emitted quoted: bare `off` is YAML-1.1 boolean
+    # False. hermes normalizes that back to "off", but our own drift check
+    # would then compare False (loaded) vs "off" (expected) forever.
+    approvals = {"mode": SingleQuotedScalarString(spec.approvals_mode)}
+
     terminal: dict[str, Any] = {
         "backend": "docker",
         "cwd": "/workspace",
         "docker_image": spec.docker_image,
         "container_persistent": True,
-        # Native hermes option: run the sandbox as the host uid/gid so every
-        # bind-mounted write (workspace, sandboxes) is host-owned — profile
-        # deletion then works without privileged cleanup. Trade-off accepted
-        # by decision 2026-07-03: no root inside the container (system package
-        # managers unavailable; user-level installers like pip/npm still work).
-        "docker_run_as_host_user": True,
+        # The sandbox runs as container root so system package managers work
+        # (F3). The docker daemon itself is ROOTLESS (preflight-enforced):
+        # container root maps to the daemon user on the host, so everything
+        # written into bind mounts (workspace, sandbox home, dockerd-created
+        # mountpoints) is host-owned — no ownership workarounds needed here.
         "docker_volumes": [f"{workspace_dir}:/workspace"],
         "docker_extra_args": network_extra_args(spec.network_mode),
     }
@@ -76,7 +81,45 @@ def managed_config(
     if spec.disk_mb is not None:
         terminal["container_disk"] = spec.disk_mb
 
-    return {"model": model, "terminal": terminal}
+    return {
+        "model": model,
+        "terminal": terminal,
+        "approvals": approvals,
+        # hermes ships hard_stop disabled; without it a model that wants a
+        # missing capability can retry a failing/hallucinated tool call
+        # forever. Bounded turns are non-negotiable for unattended agents.
+        "tool_loop_guardrails": {"hard_stop_enabled": True},
+    }
+
+
+# Toolsets rendered into ``platform_toolsets.api_server`` at agent creation.
+#
+# Why explicit: when the key is absent, hermes infers enabled toolsets by a
+# subset test of each toolset's tools against the platform composite. On
+# hermes versions without the #49622 fix, registry-registered tools pollute
+# that test (desktop-only ``read_terminal`` joins the ``terminal`` toolset,
+# which the api_server composite never lists) and ``terminal``/``process``
+# silently never reach the model. An explicit list forces hermes' direct-
+# membership branch on every version. Every key below is validated against
+# CONFIGURABLE_TOOLSETS. Interactive-only (clarify, tts, computer_use) and
+# default-off (homeassistant, spotify, discord*, x_search, video*) toolsets
+# are intentionally excluded — matching api_server's non-interactive intent.
+# Seeded once at creation; user-editable afterwards via `agent toolsets`.
+DEFAULT_API_SERVER_TOOLSETS = (
+    "browser",
+    "code_execution",
+    "cronjob",
+    "delegation",
+    "file",
+    "image_gen",
+    "memory",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "vision",
+    "web",
+)
 
 
 def _yaml() -> YAML:

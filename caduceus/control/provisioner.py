@@ -18,6 +18,7 @@ from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import Clock
 from caduceus.core.process_manager import GatewayProcessManager
 from caduceus.core.registry import Registry
+from caduceus.core.render import DEFAULT_API_SERVER_TOOLSETS
 from caduceus.core.types import (
     AgentRecord,
     AgentSpec,
@@ -114,6 +115,15 @@ class Provisioner:
                 workspace_dir=state.workspace_dir,
                 default_model=self._holder.config.upstream.default_model,
             )
+            # Seed the explicit api_server toolset surface (not drift-managed:
+            # the user may edit it later via `agent toolsets`). Without it,
+            # hermes' subset inference silently drops `terminal` — see
+            # DEFAULT_API_SERVER_TOOLSETS.
+            self._hermes.set_toolsets(profile, list(DEFAULT_API_SERVER_TOOLSETS))
+            # Seed the default sandbox login profile (PATH += games dirs) —
+            # must exist before the first gateway boot captures its env
+            # snapshot from a login shell.
+            self._hermes.seed_sandbox_profile(profile)
 
         async def env_write() -> None:
             self._hermes.write_api_server_env(
@@ -180,8 +190,9 @@ class Provisioner:
             await self._hermes.remove_containers(profile)
 
         async def profile_delete() -> None:
-            # sandboxes are host-owned (docker_run_as_host_user in the managed
-            # config), so the native hermes delete needs no privileged cleanup
+            # rootless docker: everything in the profile tree is user-owned
+            # (container root == daemon user), so the native hermes delete
+            # needs no privileged cleanup
             await self._hermes.delete_profile(profile)
 
         async def registry_remove() -> None:

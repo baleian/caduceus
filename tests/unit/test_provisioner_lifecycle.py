@@ -101,6 +101,8 @@ class Harness:
                 return CommandResult(0, "hermes 1.0\n", "")
             if argv[:2] == ["docker", "version"]:
                 return CommandResult(0, "27.0\n", "")
+            if argv[:2] == ["docker", "info"]:
+                return CommandResult(0, '["name=rootless","name=cgroupns"]\n', "")
             if argv[:2] == ["docker", "ps"]:
                 return CommandResult(0, "", "")
             return CommandResult(0, "", "")
@@ -237,15 +239,25 @@ async def test_holder_swap_renders_new_default_model() -> None:
     assert "${OPENAI_API_KEY}" in config_text  # Fix A rendered for hermes custom provider
 
 
-async def test_managed_config_renders_host_user_sandbox() -> None:
-    """Decision 2026-07-03 (option C): sandboxes run as the host user, so
-    profile deletion never needs privileged cleanup — no scrub step exists."""
+async def test_managed_config_renders_plain_root_backend() -> None:
+    """Rootless-docker model (decision 2026-07-03, final): the sandbox runs
+    as container root (apt must work) on a rootless daemon — no ownership
+    workarounds (host-user switch, tmpfs mountpoint guard, BASH_ENV umask)
+    may reappear in the managed config."""
     h = Harness()
     h.provisioner.create_agent(AgentSpec(name="coder"))
     await h.drain()
     config_text = h.hermes.read_config_text("cad-coder")
     assert config_text is not None
-    assert "docker_run_as_host_user: true" in config_text
+    assert "docker_run_as_host_user" not in config_text
+    assert "tmpfs" not in config_text
+    assert "BASH_ENV" not in config_text
+
+
+async def test_remove_pipeline_has_no_privileged_scrub() -> None:
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
 
     job = h.provisioner.remove_agent("coder")
     await h.drain()
@@ -254,4 +266,47 @@ async def test_managed_config_renders_host_user_sandbox() -> None:
     assert [s["name"] for s in snap["steps"]] == [
         "gateway-stop", "containers-remove", "profile-delete", "registry-remove",
     ]
-    assert not any(c[:3] == ["docker", "run", "--rm"] for c in h.runner.calls)
+    # rootless: the profile tree is user-owned — docker is never borrowed
+    assert not any("chown" in c for c in h.runner.calls)
+
+
+async def test_create_refuses_rootful_docker_daemon() -> None:
+    """Preflight gate: with a rootful daemon every artifact would be
+    root-owned on the host — creation must refuse and name the check."""
+    h = Harness()
+
+    async def run(argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def]
+        h.runner.calls.append(list(argv))
+        if argv[:2] == ["hermes", "--version"]:
+            return CommandResult(0, "hermes 1.0\n", "")
+        if argv[:2] == ["docker", "version"]:
+            return CommandResult(0, "27.0\n", "")
+        if argv[:2] == ["docker", "info"]:
+            return CommandResult(0, '["name=cgroupns"]\n', "")  # rootful
+        return CommandResult(0, "", "")
+
+    h.runner.run = run  # type: ignore[method-assign]
+    job = h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    snap = h.jobs.get(job.id).snapshot()
+    assert snap["state"] == "failed"
+    assert "docker-rootless" in (snap.get("error") or "")
+
+
+async def test_create_seeds_api_server_toolsets_and_unattended_defaults() -> None:
+    """Tool discovery bug: without explicit platform_toolsets.api_server the
+    installed hermes drops `terminal` via subset inference. Creation must seed
+    the explicit list plus approvals off + hard_stop on."""
+    from ruamel.yaml import YAML
+
+    from caduceus.core.render import DEFAULT_API_SERVER_TOOLSETS
+
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    config_text = h.hermes.read_config_text("cad-coder")
+    assert config_text is not None
+    loaded = YAML().load(config_text)
+    assert list(loaded["platform_toolsets"]["api_server"]) == list(DEFAULT_API_SERVER_TOOLSETS)
+    assert loaded["approvals"]["mode"] == "off"
+    assert loaded["tool_loop_guardrails"]["hard_stop_enabled"] is True

@@ -29,6 +29,9 @@ class InMemoryFileStore:
         self.dirs.add(str(path))
         self.modes[str(path)] = mode
 
+    def chmod(self, path: Path, mode: int) -> None:
+        self.modes[str(path)] = mode
+
     def write_text_atomic(self, path: Path, content: str, *, mode: int = 0o644) -> None:
         self.files[str(path)] = content
         self.modes[str(path)] = mode

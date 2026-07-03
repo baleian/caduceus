@@ -65,3 +65,7 @@ def test_workspace_ensure_reuse_flag() -> None:
     assert path2 == path
     assert existed2 is True  # L5: leftover workspace is reused, caller informs user
     assert files.modes[str(path)] == 0o700
+
+    files.modes[str(path)] = 0o2770  # interim setgid experiment leftover
+    manager.ensure("coder")
+    assert files.modes[str(path)] == 0o700  # re-ensure normalizes the mode

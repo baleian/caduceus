@@ -17,6 +17,7 @@ verified against hermes source (hermes-research.md):
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,12 +76,19 @@ class HermesAdapter:
         hermes_home: Path,
         hermes_bin: str = "hermes",
         docker_bin: str = "docker",
+        env: dict[str, str] | None = None,
     ) -> None:
         self._runner = runner
         self._files = files
         self._home = hermes_home.expanduser()
         self._hermes = hermes_bin
         self._docker = docker_bin
+        # Extra process env for every CLI invocation — carries DOCKER_HOST so
+        # docker calls hit the configured (rootless) daemon, not the ambient one.
+        self._env = env or None
+
+    async def _run(self, argv: list[str], *, timeout_s: float) -> Any:
+        return await self._runner.run(argv, timeout_s=timeout_s, env=self._env)
 
     # -- paths ---------------------------------------------------------------
 
@@ -101,7 +109,7 @@ class HermesAdapter:
     async def create_profile(self, profile: str) -> None:
         if self._files.exists(self.profile_dir(profile)):
             raise ConflictError(f"hermes profile {profile!r} already exists (L5)")
-        result = await self._runner.run(
+        result = await self._run(
             [self._hermes, "profile", "create", profile], timeout_s=HERMES_TIMEOUT_S
         )
         if not result.ok:
@@ -117,7 +125,7 @@ class HermesAdapter:
     async def delete_profile(self, profile: str) -> None:
         if not self._files.exists(self.profile_dir(profile)):
             return  # already gone — deletion is idempotent
-        result = await self._runner.run(
+        result = await self._run(
             [self._hermes, "profile", "delete", profile, "--yes"],
             timeout_s=HERMES_TIMEOUT_S,
         )
@@ -127,9 +135,35 @@ class HermesAdapter:
                 detail=redact(result.stderr or result.stdout),
             )
 
-    # NOTE: profile deletion needs no privileged cleanup — sandboxes are
-    # host-owned because managed config sets terminal.docker_run_as_host_user
-    # (decision 2026-07-03; the native hermes option for exactly this).
+    # Login-shell profile seeded into the default terminal sandbox home.
+    # hermes captures its terminal env snapshot from ``bash -l`` (base.py
+    # init_session); Debian/Ubuntu /etc/profile unconditionally resets root's
+    # PATH without the games directories, where apt installs some packages
+    # (cowsay et al.). The sandbox home bind shadows the image's /root, so
+    # ``~/.profile`` (read after /etc/profile) is the config-only hook that
+    # survives into the snapshot.
+    SANDBOX_PROFILE_CONTENT = (
+        "# Seeded by caduceus at agent creation (edit freely — never rewritten).\n"
+        'case ":$PATH:" in\n'
+        "  *:/usr/games:*) ;;\n"
+        '  *) PATH="$PATH:/usr/games:/usr/local/games" ;;\n'
+        "esac\n"
+        "export PATH\n"
+    )
+
+    def seed_sandbox_profile(self, profile: str, sandbox: str = "default") -> None:
+        """Seed the terminal sandbox home ``.profile`` (once, create-time).
+
+        Only the top-level terminal sandbox (``default``) is seeded — hermes
+        keys sandboxes by task and the top-level agent always lands on
+        ``default`` (terminal_tool). An existing file is left untouched: it
+        belongs to the user after creation."""
+        path = (
+            self.profile_dir(profile) / "sandboxes" / "docker" / sandbox
+            / "home" / ".profile"
+        )
+        if not self._files.exists(path):
+            self._files.write_text_atomic(path, self.SANDBOX_PROFILE_CONTENT)
 
     # -- managed configuration (FD2, logic §5) --------------------------------
 
@@ -218,7 +252,7 @@ class HermesAdapter:
 
     async def remove_containers(self, profile: str) -> int:
         """``docker rm -f`` every container labeled for this profile. Returns count."""
-        listing = await self._runner.run(
+        listing = await self._run(
             [
                 self._docker, "ps", "-aq",
                 "--filter", f"label=hermes-profile={profile}",
@@ -233,7 +267,7 @@ class HermesAdapter:
         ids = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
         if not ids:
             return 0
-        removal = await self._runner.run(
+        removal = await self._run(
             [self._docker, "rm", "-f", *ids], timeout_s=DOCKER_TIMEOUT_S
         )
         if not removal.ok:
@@ -246,7 +280,7 @@ class HermesAdapter:
     async def container_state(self, profile: str) -> str:
         """State of this profile's container: running/exited/absent/unknown (E3)."""
         try:
-            result = await self._runner.run(
+            result = await self._run(
                 [
                     self._docker, "ps", "-a",
                     "--filter", f"label=hermes-profile={profile}",
@@ -266,7 +300,7 @@ class HermesAdapter:
     async def list_container_profiles(self) -> set[str]:
         """Profiles that own hermes-labeled containers (orphan detection input)."""
         try:
-            result = await self._runner.run(
+            result = await self._run(
                 [
                     self._docker, "ps", "-a",
                     "--filter", "label=hermes-agent=1",
@@ -304,6 +338,7 @@ class HermesAdapter:
         checks.append(
             DoctorCheck("docker-daemon", docker is not None, docker or "docker daemon unreachable")
         )
+        checks.append(await self._check_rootless())
         checks.append(
             DoctorCheck(
                 "hermes-home",
@@ -313,9 +348,48 @@ class HermesAdapter:
         )
         return DoctorReport(checks=checks)
 
+    async def _check_rootless(self) -> DoctorCheck:
+        """The sandbox engine must map container-root writes to the host user.
+
+        With a plain rootful daemon, container root writes root-owned files
+        into the bind mounts (workspace, sandbox home) — artifacts the host
+        user cannot edit and profile deletion cannot remove without
+        privileged cleanup. Two setups dissolve that problem class:
+
+        - Linux (incl. WSL2): a ROOTLESS daemon — container root == the
+          daemon-owning user. Requires the ``uidmap`` package once (rootless
+          docker's own prerequisite, not a Caduceus component).
+        - macOS: any VM-based engine (Docker Desktop, OrbStack, colima) —
+          the VM file-sharing layer (VirtioFS et al.) already maps bind-mount
+          ownership to the host user, so rootless-ness is irrelevant there.
+
+        Creation refuses anything else.
+        """
+        if sys.platform == "darwin":
+            return DoctorCheck(
+                "docker-rootless", True,
+                "macOS VM engine — bind mounts map to the host user natively",
+            )
+        try:
+            result = await self._run(
+                [self._docker, "info", "--format", "{{json .SecurityOptions}}"],
+                timeout_s=10.0,
+            )
+        except Exception:
+            return DoctorCheck("docker-rootless", False, "docker daemon unreachable")
+        rootless = result.ok and "name=rootless" in result.stdout
+        return DoctorCheck(
+            "docker-rootless",
+            rootless,
+            "rootless daemon" if rootless else (
+                "sandbox docker daemon is not rootless — set docker.host to a "
+                "rootless socket (e.g. unix:///run/user/<uid>/docker.sock)"
+            ),
+        )
+
     async def _try_version(self, argv: list[str]) -> str | None:
         try:
-            result = await self._runner.run(argv, timeout_s=10.0)
+            result = await self._run(argv, timeout_s=10.0)
         except Exception:
             return None
         if not result.ok:

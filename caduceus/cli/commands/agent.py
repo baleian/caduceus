@@ -49,11 +49,17 @@ def create(
     persona: Annotated[
         Path | None, typer.Option(help="initial SOUL.md content file")
     ] = None,
+    approvals: Annotated[
+        str | None,
+        typer.Option(help="approvals mode: off (default, unattended) | smart | manual"),
+    ] = None,
     no_wait: NoWaitFlag = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Provision an isolated hermes agent (F1)."""
     spec: dict[str, Any] = {"name": name}
+    if approvals is not None:
+        spec["approvals_mode"] = approvals
     if image is not None:
         spec["docker_image"] = image
     if network is not None:
@@ -251,6 +257,30 @@ def skills(
             ["SKILL", "ENABLED"],
             [[str(s.get("name", "")), str(s.get("enabled", ""))] for s in listing],
         )
+    finish(ExitCode.OK)
+
+
+@agent_app.command()
+def approvals(
+    ctx: typer.Context,
+    name: str,
+    set_mode: Annotated[
+        str | None,
+        typer.Option("--set", help="switch mode: off | smart | manual "
+                                   "(takes effect on next gateway restart)"),
+    ] = None,
+) -> None:
+    """Show or switch the agent's hermes approvals mode (default: off)."""
+    client = get_client(ctx)
+    renderer = get_renderer(ctx)
+    if set_mode is None:
+        renderer.data_text(client.get_approvals(name))
+        finish(ExitCode.OK)
+    client.put_approvals(name, set_mode)
+    renderer.progress(
+        f"{name}: approvals mode set to {set_mode} — restart the agent "
+        f"(`caduceus agent stop/start {name}`) to apply"
+    )
     finish(ExitCode.OK)
 
 

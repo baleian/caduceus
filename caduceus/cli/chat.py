@@ -69,6 +69,34 @@ class SessionRef:
 
 APPROVAL_CHOICES = ("once", "session", "always", "deny")
 
+FAILURE_DETAIL_LIMIT = 200
+
+
+def tool_failure_summary(content: Any, *, limit: int = FAILURE_DETAIL_LIMIT) -> str:
+    """One-line failure detail from a persisted tool message's content.
+
+    Terminal-style results are JSON ``{"output", "exit_code", "error"}``;
+    other tools store plain text. Whitespace is flattened — this renders as
+    a single annotation line under the ✗ mark."""
+    text = str(content or "")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        parts: list[str] = []
+        exit_code = parsed.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            parts.append(f"exit {exit_code}")
+        for key in ("error", "output", "message", "detail"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+                break
+        if parts:
+            text = " · ".join(parts)
+    return redact(" ".join(text.split()))[:limit]
+
 
 class ChatApp:
     def __init__(
@@ -85,6 +113,12 @@ class ChatApp:
         self._input = input_fn
         self.state: ChatState = "idle"
         self.stops_sent_this_turn = 0  # PU3-5 observability
+        self._turn_text = ""  # raw delta accumulator (reasoning dedupe + completed fallback)
+        # per-turn tool bookkeeping: the live SSE contract carries only
+        # {tool, duration, error:bool} on tool.completed — the failure detail
+        # exists solely in the session store, fetched after the turn.
+        self._turn_tools: list[dict[str, Any]] = []
+        self._turn_baseline = 0  # session message count before this turn
 
     # -- session resolution (Q4=A) ----------------------------------------------
 
@@ -102,12 +136,16 @@ class ChatApp:
         created = api(self._agent, "POST", "api/sessions", json={})
         return SessionRef(id=str(created["session"]["id"]), resumed=False)
 
-    def _history(self, session_id: str) -> list[dict[str, str]]:
+    def _messages_raw(self, session_id: str) -> list[dict[str, Any]]:
         listing = self._client.agent_api(
             self._agent, "GET", f"api/sessions/{session_id}/messages"
         ) or {}
+        return [m for m in listing.get("data", []) if isinstance(m, dict)]
+
+    @staticmethod
+    def _history(raw_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
         history = []
-        for message in listing.get("data", []):
+        for message in raw_messages:
             role, content = message.get("role"), message.get("content")
             if role in ("user", "assistant") and isinstance(content, str) and content:
                 history.append({"role": role, "content": content})
@@ -143,9 +181,12 @@ class ChatApp:
 
     def _turn(self, session_id: str, user_message: str) -> None:
         self.stops_sent_this_turn = 0
+        self._turn_text = ""
+        self._turn_tools = []
         run_id: str | None = None
         try:
-            history = self._history(session_id)
+            raw = self._messages_raw(session_id)
+            self._turn_baseline = len(raw)
             started = self._client.agent_api(
                 self._agent,
                 "POST",
@@ -153,11 +194,12 @@ class ChatApp:
                 json={
                     "input": user_message,
                     "session_id": session_id,
-                    "conversation_history": history,
+                    "conversation_history": self._history(raw),
                 },
             )
             run_id = str(started["run_id"])
             self._consume_stream(run_id)
+            self._render_tool_failures(session_id)
         except CliError as err:
             self._render.error(err)
         except Exception as exc:  # noqa: BLE001 - stream cut / transport: idle recovery
@@ -208,14 +250,27 @@ class ChatApp:
         kind = payload.get("event", "")
         out = self._render.out
         if kind == "message.delta":
-            out.print(Text(redact(str(payload.get("delta", "")), limit=1_000_000)), end="")
+            delta = str(payload.get("delta", ""))
+            self._turn_text += delta
+            out.print(Text(redact(delta, limit=1_000_000)), end="")
         elif kind == "reasoning.available":
-            out.print(Text("∴ " + redact(str(payload.get("text", ""))), style="dim"))
+            # hermes fills this event with the assistant message text itself
+            # (content[:500], a progress relay — conversation_loop.py), so
+            # rendering it verbatim would echo every reply a second time.
+            # Show it only when it carries text the delta stream did not.
+            text = str(payload.get("text", "")).strip()
+            if text and text not in self._turn_text:
+                out.print(Text("∴ " + redact(text), style="dim"))
         elif kind == "tool.started":
             preview = redact(str(payload.get("preview") or ""))[:120]
+            self._turn_tools.append(
+                {"tool": str(payload.get("tool", "?")), "preview": preview, "error": None}
+            )
             out.print(Text(f"⚙ {payload.get('tool', '?')} {preview}", style="cyan"))
         elif kind == "tool.completed":
-            mark = "✗" if payload.get("error") else "✓"
+            error = bool(payload.get("error"))
+            self._record_tool_completed(str(payload.get("tool", "?")), error)
+            mark = "✗" if error else "✓"
             out.print(Text(f"  {mark} {payload.get('tool', '?')}"
                            f" ({payload.get('duration', '?')}s)", style="dim"))
         elif kind == "approval.request":
@@ -225,7 +280,12 @@ class ChatApp:
             elif action == "auto_deny":
                 self._send_approval(run_id, "deny")
         elif kind == "run.completed":
-            out.print()  # newline after last delta
+            output = str(payload.get("output") or "")
+            if output and not self._turn_text.strip():
+                # provider streamed no deltas — the reply only exists here
+                out.print(Text(redact(output, limit=1_000_000)))
+            else:
+                out.print()  # newline after last delta
         elif kind == "run.failed":
             self._render.error(
                 CliError(str(payload.get("error", "run failed")), ExitCode.ERROR)
@@ -234,6 +294,43 @@ class ChatApp:
             out.print()
             self._render.notice("turn stopped")
         # unknown event kinds are ignored (forward compatibility)
+
+    def _record_tool_completed(self, tool: str, error: bool) -> None:
+        """Pair a completion with its started record (last open entry of the
+        same tool — parallel calls of one tool complete in start order)."""
+        for entry in reversed(self._turn_tools):
+            if entry["tool"] == tool and entry["error"] is None:
+                entry["error"] = error
+                return
+        self._turn_tools.append({"tool": tool, "preview": "", "error": error})
+
+    def _render_tool_failures(self, session_id: str) -> None:
+        """After the turn: show WHY tools failed. The live event stream omits
+        results, but the session store persists each tool message (verified:
+        role=tool, content carries output/exit_code) — fetch and pair by order.
+        Silent skip on any pairing mismatch (blocked calls, cut streams):
+        wrong attribution is worse than no annotation."""
+        completed = [t for t in self._turn_tools if t["error"] is not None]
+        if not any(t["error"] for t in completed):
+            return
+        try:
+            raw = self._messages_raw(session_id)
+        except CliError:
+            return
+        tool_messages = [
+            m for m in raw[self._turn_baseline:] if m.get("role") == "tool"
+        ]
+        if len(tool_messages) != len(completed):
+            return
+        for event, message in zip(completed, tool_messages, strict=True):
+            if not event["error"]:
+                continue
+            detail = tool_failure_summary(message.get("content"))
+            if not detail:
+                continue
+            label = f"✗ {event['tool']}" + (f" {event['preview']}" if event["preview"] else "")
+            self._render.out.print(Text(label, style="red"))
+            self._render.out.print(Text(f"  └ {detail}", style="dim"))
 
     def _prompt_approval(self, run_id: str, payload: dict[str, Any]) -> None:
         summary = redact(str(payload.get("preview") or payload.get("command")

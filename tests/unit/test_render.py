@@ -107,3 +107,34 @@ def test_managed_model_renders_api_key_env_reference() -> None:
 
     merged = merge_config_text(HERMES_STYLE_CONFIG, make_managed())
     assert YAML().load(merged)["model"]["api_key"] == "${OPENAI_API_KEY}"
+
+
+def test_managed_config_renders_unattended_defaults() -> None:
+    """approvals off (quoted — YAML-1.1 bool trap) + hard_stop guardrail on."""
+    from ruamel.yaml import YAML
+
+    merged = merge_config_text(None, make_managed())
+    assert "mode: 'off'" in merged or 'mode: "off"' in merged  # never bare `off`
+    loaded = YAML().load(merged)
+    assert loaded["approvals"]["mode"] == "off"  # str, not bool False
+    assert loaded["tool_loop_guardrails"]["hard_stop_enabled"] is True
+
+
+def test_managed_approvals_follows_spec_and_roundtrips_drift_free() -> None:
+    from caduceus.core.render import diff_managed
+
+    managed = managed_config(
+        AgentSpec(name="coder", approvals_mode="manual"),
+        daemon_v1_url="http://127.0.0.1:4285/v1",
+        workspace_dir="/w/coder",
+        default_model="m",
+    )
+    merged = merge_config_text(None, managed)
+    assert diff_managed(merged, managed) == []  # quoting survives the round-trip
+
+
+def test_default_api_server_toolsets_include_terminal() -> None:
+    from caduceus.core.render import DEFAULT_API_SERVER_TOOLSETS
+
+    assert "terminal" in DEFAULT_API_SERVER_TOOLSETS  # the whole point (#49622)
+    assert len(set(DEFAULT_API_SERVER_TOOLSETS)) == len(DEFAULT_API_SERVER_TOOLSETS)

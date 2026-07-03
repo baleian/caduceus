@@ -27,6 +27,8 @@ class FakeDaemon:
     def __init__(self) -> None:
         self.sessions: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
+        # optional: one messages payload per successive GET (grows mid-turn)
+        self.messages_queue: list[list[dict[str, Any]]] = []
         self.stream = sse()
         self.requests: list[tuple[str, str, bytes]] = []
         self.created = 0
@@ -40,7 +42,8 @@ class FakeDaemon:
             self.created += 1
             return httpx.Response(201, json={"session": {"id": f"new-{self.created}"}})
         if path.endswith("/messages"):
-            return httpx.Response(200, json={"object": "list", "data": self.messages})
+            data = self.messages_queue.pop(0) if self.messages_queue else self.messages
+            return httpx.Response(200, json={"object": "list", "data": data})
         if path.startswith("/agents/bob/api/api/sessions/"):
             session_id = path.rsplit("/", 1)[-1]
             known = [s["id"] for s in self.sessions]
@@ -100,6 +103,78 @@ def test_full_turn_renders_deltas_thinking_and_tools(harness: Any) -> None:
     assert "∴ pondering" in out    # thinking
     assert "⚙ shell ls -la" in out
     assert app.state == "idle"
+
+
+def test_reasoning_echo_of_streamed_text_is_suppressed(harness: Any) -> None:
+    """hermes fills reasoning.available with the assistant message itself
+    (content[:500] progress relay) — rendering it would duplicate every
+    reply (chat transcript bug, 2026-07-03)."""
+    daemon, app, out_buf, err_buf, script = harness
+    daemon.stream = sse(
+        {"event": "message.delta", "delta": "cowsay가 설치되어 "},
+        {"event": "message.delta", "delta": "있지 않습니다."},
+        {"event": "reasoning.available", "text": "cowsay가 설치되어 있지 않습니다."},
+        {"event": "run.completed", "output": "", "usage": {}},
+    )
+    script.extend(["hi", "/exit"])
+    app.run(new=True)
+    out = out_buf.getvalue()
+    assert out.count("cowsay가 설치되어 있지 않습니다.") == 1
+    assert "∴" not in out
+
+
+def test_run_completed_output_rendered_when_no_deltas_streamed(harness: Any) -> None:
+    daemon, app, out_buf, err_buf, script = harness
+    daemon.stream = sse(
+        {"event": "run.completed", "output": "non-streaming reply", "usage": {}},
+    )
+    script.extend(["hi", "/exit"])
+    app.run(new=True)
+    assert "non-streaming reply" in out_buf.getvalue()
+
+
+def test_failed_tool_detail_fetched_from_session_store(harness: Any) -> None:
+    """The runs SSE omits tool results ({tool, duration, error:bool} only) —
+    after a turn with failures, the detail is recovered from the persisted
+    session messages and rendered under the transcript."""
+    daemon, app, out_buf, err_buf, script = harness
+    daemon.stream = sse(
+        {"event": "tool.started", "tool": "terminal", "preview": "cowsay hi"},
+        {"event": "tool.completed", "tool": "terminal", "duration": 1.1, "error": True},
+        {"event": "tool.started", "tool": "terminal", "preview": "ls"},
+        {"event": "tool.completed", "tool": "terminal", "duration": 0.1, "error": False},
+        {"event": "message.delta", "delta": "설치가 필요합니다."},
+        {"event": "run.completed", "output": "", "usage": {}},
+    )
+    turn_messages = [
+        {"role": "user", "content": "cowsay 해봐"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "tool_name": "terminal",
+         "content": '{"output": "bash: line 3: cowsay: command not found",'
+                     ' "exit_code": 127, "error": null}'},
+        {"role": "tool", "tool_name": "terminal", "content": '{"output": "a.txt", "exit_code": 0}'},
+        {"role": "assistant", "content": "설치가 필요합니다."},
+    ]
+    daemon.messages_queue = [[], turn_messages]  # pre-turn baseline, post-turn fetch
+    script.extend(["cowsay 해봐", "/exit"])
+    app.run(new=True)
+    out = out_buf.getvalue()
+    assert "✗ terminal cowsay hi" in out
+    assert "└ exit 127 · bash: line 3: cowsay: command not found" in out
+    assert out.count("└") == 1  # the succeeded call gets no annotation
+
+
+def test_failure_detail_skipped_on_pairing_mismatch(harness: Any) -> None:
+    daemon, app, out_buf, err_buf, script = harness
+    daemon.stream = sse(
+        {"event": "tool.started", "tool": "terminal", "preview": "x"},
+        {"event": "tool.completed", "tool": "terminal", "duration": 0.1, "error": True},
+        {"event": "run.completed", "output": "", "usage": {}},
+    )
+    daemon.messages_queue = [[], []]  # store has no tool messages → cannot pair
+    script.extend(["hi", "/exit"])
+    app.run(new=True)
+    assert "└" not in out_buf.getvalue()
 
 
 def test_resume_passes_history_to_runs(harness: Any) -> None:

@@ -59,10 +59,21 @@ class ProcessInfo:
 
 
 class GatewayProcessManager:
-    def __init__(self, spawner: ProcessSpawner, clock: Clock, events: EventSink) -> None:
+    def __init__(
+        self,
+        spawner: ProcessSpawner,
+        clock: Clock,
+        events: EventSink,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self._spawner = spawner
         self._clock = clock
         self._events = events
+        # Extra env for every gateway child (merged over the daemon's) —
+        # carries DOCKER_HOST so hermes' terminal backend uses the configured
+        # (rootless) docker daemon.
+        self._env = env or None
         self._managed: dict[str, _Managed] = {}
         self._shutting_down = False
 
@@ -129,7 +140,7 @@ class GatewayProcessManager:
 
     async def _spawn(self, managed: _Managed) -> None:
         managed.state = "starting"
-        handle = await self._spawner.spawn(managed.argv)
+        handle = await self._spawner.spawn(managed.argv, env=self._env)
         managed.handle = handle
         managed.started_at_mono = self._clock.monotonic()
         managed.state = "running"

@@ -71,6 +71,8 @@ def make_daemon() -> tuple[Daemon, InMemoryFileStore]:
             return CommandResult(0, "hermes 1.0\n", "")
         if argv[:2] == ["docker", "version"]:
             return CommandResult(0, "27\n", "")
+        if argv[:2] == ["docker", "info"]:
+            return CommandResult(0, '["name=rootless"]\n', "")
         return CommandResult(0, "", "")
 
     runner.run = run  # type: ignore[method-assign]
@@ -257,3 +259,36 @@ def test_soul_and_toolsets_editing_through_api() -> None:
         assert client.post(
             "/api/agents/coder/token/rotate", headers=headers
         ).status_code == 204
+
+
+def test_approvals_mode_switch_updates_spec_and_profile_config() -> None:
+    daemon, files = make_daemon()
+    app = attach_lifespan(daemon)
+    with TestClient(app) as client:
+        headers = admin_headers(files)
+        created = client.post("/api/agents", json={"name": "appr"}, headers=headers)
+        assert wait_job(client, headers, created.json()["job_id"])["state"] == "done"
+
+        # default: unattended
+        assert client.get("/api/agents/appr/approvals", headers=headers).json() == {
+            "mode": "off"
+        }
+        config_text = files.read_text(HERMES_HOME / "profiles" / "cad-appr" / "config.yaml")
+        assert "'off'" in config_text or '"off"' in config_text
+
+        # switch to manual → spec + rendered config both updated
+        response = client.put(
+            "/api/agents/appr/approvals", json={"mode": "manual"}, headers=headers
+        )
+        assert response.status_code == 204
+        assert client.get("/api/agents/appr/approvals", headers=headers).json() == {
+            "mode": "manual"
+        }
+        config_text = files.read_text(HERMES_HOME / "profiles" / "cad-appr" / "config.yaml")
+        assert "manual" in config_text
+
+        # invalid mode rejected by the contract
+        bad = client.put(
+            "/api/agents/appr/approvals", json={"mode": "yolo"}, headers=headers
+        )
+        assert bad.status_code == 422

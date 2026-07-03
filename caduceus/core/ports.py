@@ -87,6 +87,8 @@ class FileStore(Protocol):
 
     def mkdir(self, path: Path, *, mode: int = 0o755) -> None: ...
 
+    def chmod(self, path: Path, mode: int) -> None: ...
+
     def write_text_atomic(self, path: Path, content: str, *, mode: int = 0o644) -> None: ...
 
     def rename(self, src: Path, dst: Path) -> None: ...
@@ -209,6 +211,9 @@ class RealFileStore:
 
     def mkdir(self, path: Path, *, mode: int = 0o755) -> None:
         path.mkdir(mode=mode, parents=True, exist_ok=True)
+
+    def chmod(self, path: Path, mode: int) -> None:
+        os.chmod(path, mode)
 
     def write_text_atomic(self, path: Path, content: str, *, mode: int = 0o644) -> None:
         """tmp + fsync + os.replace — crash-safe atomic write (NFR pattern)."""

@@ -171,6 +171,12 @@ class ApiClient:
             "PUT", f"/api/agents/{name}/skills/{skill}", json={"enabled": enabled}
         )
 
+    def get_approvals(self, name: str) -> str:
+        return str(self._json("GET", f"/api/agents/{name}/approvals")["mode"])
+
+    def put_approvals(self, name: str, mode: str) -> None:
+        self._request("PUT", f"/api/agents/{name}/approvals", json={"mode": mode})
+
     def get_toolsets(self, name: str) -> Any:
         return self._json("GET", f"/api/agents/{name}/toolsets")["toolsets"]
 

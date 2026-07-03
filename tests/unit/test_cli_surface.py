@@ -52,6 +52,10 @@ class AdminFake:
             return httpx.Response(200, json=[{"id": "job-1", "kind": "create",
                                               "agent": "bob", "state": "done",
                                               "created_at": "t", "steps": []}])
+        if path == "/api/agents/bob/approvals" and method == "GET":
+            return httpx.Response(200, json={"mode": "off"})
+        if path == "/api/agents/bob/approvals" and method == "PUT":
+            return httpx.Response(204)
         if path == "/api/agents/bob/soul" and method == "GET":
             return httpx.Response(200, json={"content": "# SOUL"})
         if path == "/api/agents/bob/token/rotate":
@@ -248,3 +252,20 @@ def test_gateway_upstream_set_rejects_malformed_header(fake: AdminFake) -> None:
         "gateway", "upstream", "set", "http://new-up",
         "--default-model", "m", "--header", "no-colon-here",
     ]) == 2
+
+
+def test_agent_approvals_get_and_set(fake: AdminFake, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["agent", "approvals", "bob"]) == 0
+    assert "off" in capsys.readouterr().out
+    assert main(["agent", "approvals", "bob", "--set", "manual"]) == 0
+    put = next(r for r in fake.requests
+               if r.method == "PUT" and r.url.path.endswith("/approvals"))
+    assert json.loads(put.content) == {"mode": "manual"}
+    assert "restart" in capsys.readouterr().err  # apply guidance
+
+
+def test_agent_create_passes_approvals_mode(fake: AdminFake) -> None:
+    assert main(["agent", "create", "bob", "--approvals", "smart", "--no-wait"]) == 0
+    post = next(r for r in fake.requests
+                if r.method == "POST" and r.url.path == "/api/agents")
+    assert json.loads(post.content)["approvals_mode"] == "smart"

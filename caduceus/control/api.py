@@ -19,7 +19,7 @@ from caduceus.core.errors import CaduceusError, ConflictError, NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.registry import Registry
 from caduceus.core.tokens import issue_token
-from caduceus.core.types import AgentSpec, UpstreamConfig
+from caduceus.core.types import AgentSpec, ApprovalsMode, UpstreamConfig
 from caduceus.proxy.traffic import TrafficStats
 from caduceus.proxy.upstream import UpstreamClient
 
@@ -49,6 +49,12 @@ class SkillToggle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
+
+
+class ApprovalsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ApprovalsMode
 
 
 class ToolsetsUpdate(BaseModel):
@@ -199,6 +205,33 @@ def build_admin_router(
         try:
             record = registry.get(name)
             hermes.set_skill_enabled(record.profile_name, skill, body.enabled)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return None
+
+    @router.get("/api/agents/{name}/approvals")
+    async def get_approvals(name: str) -> Any:
+        try:
+            record = registry.get(name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"mode": record.spec.approvals_mode}
+
+    @router.put("/api/agents/{name}/approvals", status_code=204, response_model=None)
+    async def put_approvals(name: str, body: ApprovalsUpdate) -> Any:
+        """Switch approvals mode: update the spec of record, then re-render the
+        managed config so hermes picks it up on next gateway (re)start."""
+        try:
+            record = registry.get(name)
+            new_spec = record.spec.model_copy(update={"approvals_mode": body.mode})
+            registry.replace(record.model_copy(update={"spec": new_spec}))
+            hermes.apply_managed_config(
+                record.profile_name,
+                new_spec,
+                daemon_v1_url=f"http://127.0.0.1:{config.config.listen.port}/v1",
+                workspace_dir=record.workspace_dir,
+                default_model=config.config.upstream.default_model,
+            )
         except CaduceusError as exc:
             return _error_response(exc)
         return None

@@ -67,6 +67,15 @@ class TestProfileLifecycle:
         await adapter.delete_profile(PROFILE)
         assert runner.calls == [["hermes", "profile", "delete", PROFILE, "--yes"]]
 
+    def test_seed_sandbox_profile_writes_once_and_respects_user_edits(self) -> None:
+        adapter, _, files = make_adapter()
+        adapter.seed_sandbox_profile(PROFILE)
+        path = f"{PROFILE_DIR}/sandboxes/docker/default/home/.profile"
+        assert "/usr/games" in files.files[path]  # Debian games-dir PATH fix
+        files.files[path] = "# my custom profile\n"
+        adapter.seed_sandbox_profile(PROFILE)  # second call must not clobber
+        assert files.files[path] == "# my custom profile\n"
+
 
 class TestManagedConfigAndEnv:
     def test_apply_managed_config_writes_merged_yaml(self) -> None:
@@ -178,6 +187,58 @@ class TestMisc:
         assert by_name["hermes-cli"].detail == "hermes 1.2.3"
         assert not by_name["docker-daemon"].ok
         assert not report.ok
+
+    async def test_preflight_rootless_check(self) -> None:
+        adapter, runner, files = make_adapter()
+        files.mkdir(HOME)
+        runner.on("hermes", "--version", result=CommandResult(0, "hermes 1.2.3\n", ""))
+        runner.on("docker", "version", result=CommandResult(0, "27\n", ""))
+        runner.on(
+            "docker", "info",
+            result=CommandResult(0, '["name=rootless","name=cgroupns"]\n', ""),
+        )
+        report = await adapter.preflight()
+        assert {c.name: c.ok for c in report.checks}["docker-rootless"] is True
+        assert report.ok
+
+        rootful = ScriptedRunner()
+        rootful.on("docker", "info", result=CommandResult(0, '["name=cgroupns"]\n', ""))
+        adapter2, _, _ = make_adapter(rootful)
+        check = {c.name: c for c in (await adapter2.preflight()).checks}["docker-rootless"]
+        assert check.ok is False
+        assert "rootless" in check.detail
+
+    async def test_rootless_check_passes_on_macos_vm_engines(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """N9 (macOS first-class): Desktop/OrbStack VM file sharing already
+        maps bind-mount ownership to the host user — no rootless needed."""
+        import sys as _sys
+
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        rootful = ScriptedRunner()
+        rootful.on("docker", "info", result=CommandResult(0, '["name=cgroupns"]\n', ""))
+        adapter, _, _ = make_adapter(rootful)
+        check = {c.name: c for c in (await adapter.preflight()).checks}["docker-rootless"]
+        assert check.ok is True
+        assert "macOS" in check.detail
+
+    async def test_adapter_env_reaches_subprocess_calls(self) -> None:
+        """docker.host plumbing: DOCKER_HOST must ride along every CLI call."""
+        captured: list[dict[str, str] | None] = []
+
+        class EnvRunner(ScriptedRunner):
+            async def run(self, argv, *, timeout_s, env=None, cwd=None):  # type: ignore[no-untyped-def,override]
+                captured.append(env)
+                return CommandResult(0, "", "")
+
+        runner = EnvRunner()
+        adapter = HermesAdapter(
+            runner, InMemoryFileStore(), hermes_home=HOME,
+            env={"DOCKER_HOST": "unix:///run/user/1000/docker.sock"},
+        )
+        await adapter.remove_containers(PROFILE)
+        assert captured and all(
+            e == {"DOCKER_HOST": "unix:///run/user/1000/docker.sock"} for e in captured
+        )
 
     def test_redact_masks_long_hex(self) -> None:
         assert "***" in redact("token=" + "ab" * 20)

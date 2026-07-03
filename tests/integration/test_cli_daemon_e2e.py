@@ -87,6 +87,8 @@ def make_daemon() -> tuple[Daemon, InMemoryFileStore]:
             return CommandResult(0, "hermes 1.0\n", "")
         if argv[:2] == ["docker", "version"]:
             return CommandResult(0, "27\n", "")
+        if argv[:2] == ["docker", "info"]:
+            return CommandResult(0, '["name=rootless"]\n', "")
         return CommandResult(0, "", "")
 
     runner.run = run  # type: ignore[method-assign]

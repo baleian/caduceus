@@ -15,6 +15,9 @@ from caduceus.core.errors import WorkspaceError
 from caduceus.core.ports import FileStore
 from caduceus.core.types import validate_agent_name
 
+# Private to the user. The sandbox docker daemon is rootless (preflight-
+# enforced), so container root == this user on the host and every artifact
+# the agent writes here is natively user-owned — no group/setgid machinery.
 _WORKSPACE_DIR_MODE = 0o700
 
 
@@ -44,4 +47,7 @@ class WorkspaceManager:
         existed = self._files.exists(path)
         if not existed:
             self._files.mkdir(path, mode=_WORKSPACE_DIR_MODE)
+        # normalize in both branches: reused workspaces may carry a mode from
+        # an older version (e.g. the interim 2770-setgid experiment)
+        self._files.chmod(path, _WORKSPACE_DIR_MODE)
         return path, existed
