@@ -26,7 +26,9 @@ def test_missing_config_raises_with_init_hint() -> None:
 def test_save_load_round_trip_with_defaults() -> None:
     files = InMemoryFileStore()
     store = make_store(files)
-    config = CaduceusConfig(upstream=UpstreamConfig(base_url="http://localhost:11434/v1"))
+    config = CaduceusConfig(
+        upstream=UpstreamConfig(base_url="http://localhost:11434/v1", default_model="llama3")
+    )
     store.save(config)
     loaded = store.load()
     assert loaded == config

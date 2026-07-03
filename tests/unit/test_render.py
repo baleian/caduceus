@@ -95,3 +95,15 @@ def test_env_replaces_existing_key_in_place() -> None:
     assert result.count("OPENAI_API_KEY") == 1
     assert "OPENAI_API_KEY=new" in result
     assert "OTHER=1" in result
+
+
+def test_managed_model_renders_api_key_env_reference() -> None:
+    """hermes' custom provider reads model.api_key from config (not env vars),
+    so the managed tree must reference the gateway token via ${OPENAI_API_KEY}
+    — expanded by hermes from the profile .env, never stored literally."""
+    managed = make_managed()
+    assert managed["model"]["api_key"] == "${OPENAI_API_KEY}"
+    from ruamel.yaml import YAML
+
+    merged = merge_config_text(HERMES_STYLE_CONFIG, make_managed())
+    assert YAML().load(merged)["model"]["api_key"] == "${OPENAI_API_KEY}"

@@ -36,7 +36,9 @@ def real_cli_env(
         pytest.skip("hermes + docker required")
     files = RealFileStore()
     home = tmp_path / "caduceus-home"
-    config = CaduceusConfig(upstream=UpstreamConfig(base_url="http://127.0.0.1:11434/v1"))
+    config = CaduceusConfig(
+        upstream=UpstreamConfig(base_url="http://127.0.0.1:11434/v1", default_model="llama3")
+    )
     config_store = CaduceusConfigStore(home / "config.yaml", files)
     config_store.save(config)
     daemon = build_daemon(

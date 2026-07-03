@@ -139,7 +139,8 @@ def test_resolve_env_overrides_win(tmp_path: Path) -> None:
 
 def test_resolve_reads_config_yaml_and_token_file(tmp_path: Path) -> None:
     (tmp_path / "config.yaml").write_text(
-        "listen: {host: 127.0.0.1, port: 5000}\nupstream: {base_url: http://up}\n"
+        "listen: {host: 127.0.0.1, port: 5000}\n"
+        "upstream: {base_url: http://up, default_model: m}\n"
     )
     (tmp_path / "admin.token").write_text("filetoken\n")
     config = resolve_client_config(home=tmp_path, env={})

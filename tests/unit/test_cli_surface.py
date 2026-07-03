@@ -176,7 +176,8 @@ def test_gateway_status_human(fake: AdminFake, capsys: pytest.CaptureFixture[str
 
 
 def test_gateway_upstream_set(fake: AdminFake, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["gateway", "upstream", "set", "http://new-up"]) == 0
+    assert main(["gateway", "upstream", "set", "http://new-up",
+                 "--default-model", "new-model"]) == 0
     assert "http://new-up" in capsys.readouterr().err
 
 
@@ -221,3 +222,29 @@ def test_unauthorized_exits_3(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(AppState, "client", denied_client)
     assert main(["agent", "ls"]) == 3
     assert "admin" in capsys.readouterr().err.lower()
+
+
+def test_gateway_upstream_set_requires_default_model(fake: AdminFake) -> None:
+    assert main(["gateway", "upstream", "set", "http://new-up"]) == 2
+
+
+def test_gateway_upstream_set_with_headers(fake: AdminFake) -> None:
+    assert main([
+        "gateway", "upstream", "set", "http://new-up",
+        "--default-model", "m",
+        "--header", "x-gateway-api-key: ${GATEWAY_KEY}",
+        "--header", "x-gateway-provider: openai",
+    ]) == 0
+    put = next(r for r in fake.requests if r.method == "PUT")
+    body = json.loads(put.content)
+    assert body["extra_headers"] == {
+        "x-gateway-api-key": "${GATEWAY_KEY}",
+        "x-gateway-provider": "openai",
+    }
+
+
+def test_gateway_upstream_set_rejects_malformed_header(fake: AdminFake) -> None:
+    assert main([
+        "gateway", "upstream", "set", "http://new-up",
+        "--default-model", "m", "--header", "no-colon-here",
+    ]) == 2

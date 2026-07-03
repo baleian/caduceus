@@ -26,6 +26,7 @@ from caduceus.core.tokens import ADMIN_TOKEN_FILE, load_or_create_admin_token
 from caduceus.core.types import CaduceusConfig, UpstreamConfig
 
 DEFAULT_UPSTREAM_URL = "https://api.openai.com/v1"
+DEFAULT_UPSTREAM_MODEL = "gpt-4o"  # placeholder — the init wizard asks for the real one
 DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
 PID_FILE = "caduceusd.pid"
@@ -58,7 +59,9 @@ def ensure_initialized(home: Path, files: FileStore | None = None) -> list[str]:
         store.save(
             CaduceusConfig(
                 upstream=UpstreamConfig(
-                    base_url=DEFAULT_UPSTREAM_URL, api_key_env=DEFAULT_API_KEY_ENV
+                    base_url=DEFAULT_UPSTREAM_URL,
+                    default_model=DEFAULT_UPSTREAM_MODEL,
+                    api_key_env=DEFAULT_API_KEY_ENV,
                 )
             )
         )
@@ -90,13 +93,18 @@ def run_init(
     if interactive:
         current = config.upstream
         base_url = input_fn(f"upstream base_url [{current.base_url}] › ").strip()
+        default_model = input_fn(
+            f"upstream default model [{current.default_model}] › "
+        ).strip()
         api_key_env = input_fn(
-            f"upstream api_key_env [{current.api_key_env or '-'}] › "
+            f"upstream api_key_env [{current.api_key_env or '-'}] "
+            "('-' to clear for keyless local servers) › "
         ).strip()
         upstream = UpstreamConfig(
             base_url=base_url or current.base_url,
-            api_key_env=api_key_env or current.api_key_env,
-            default_model=current.default_model,
+            default_model=default_model or current.default_model,
+            api_key_env=None if api_key_env == "-" else (api_key_env or current.api_key_env),
+            extra_headers=current.extra_headers,
         )
         if upstream != current:
             store.save(config.model_copy(update={"upstream": upstream}))

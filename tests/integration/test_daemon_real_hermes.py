@@ -40,7 +40,7 @@ def daemon_client(tmp_path: Path):  # type: ignore[no-untyped-def]
     home = tmp_path / "caduceus-home"
     config = CaduceusConfig(
         listen=ListenConfig(port=4299),
-        upstream=UpstreamConfig(base_url="http://127.0.0.1:11434/v1"),
+        upstream=UpstreamConfig(base_url="http://127.0.0.1:11434/v1", default_model="llama3"),
     )
     config_store = CaduceusConfigStore(home / "config.yaml", files)
     config_store.save(config)

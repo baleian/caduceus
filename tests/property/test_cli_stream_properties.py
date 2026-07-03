@@ -16,7 +16,8 @@ EVENT_NAMES = st.text(
     max_size=12,
 )
 DATA_TEXT = st.text(
-    alphabet=st.characters(exclude_characters="\r\n"), max_size=40
+    alphabet=st.characters(exclude_characters="\r\n", exclude_categories=("Cs",)),
+    max_size=40,
 )
 
 

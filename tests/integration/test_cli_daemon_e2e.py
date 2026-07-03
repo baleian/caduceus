@@ -91,7 +91,9 @@ def make_daemon() -> tuple[Daemon, InMemoryFileStore]:
 
     runner.run = run  # type: ignore[method-assign]
 
-    config = CaduceusConfig(upstream=UpstreamConfig(base_url="http://upstream.test/v1"))
+    config = CaduceusConfig(
+        upstream=UpstreamConfig(base_url="http://upstream.test/v1", default_model="test-model")
+    )
     config_store = CaduceusConfigStore(CADUCEUS_HOME / "config.yaml", files)
     config_store.save(config)
     daemon = build_daemon(

@@ -184,13 +184,18 @@ class ApiClient:
         return result
 
     def put_upstream(
-        self, base_url: str, *, api_key_env: str | None = None, default_model: str | None = None
+        self,
+        base_url: str,
+        *,
+        default_model: str,
+        api_key_env: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"base_url": base_url}
+        body: dict[str, Any] = {"base_url": base_url, "default_model": default_model}
         if api_key_env is not None:
             body["api_key_env"] = api_key_env
-        if default_model is not None:
-            body["default_model"] = default_model
+        if extra_headers:
+            body["extra_headers"] = extra_headers
         result: dict[str, Any] = self._json("PUT", "/api/gateway/upstream", json=body)
         return result
 

@@ -39,10 +39,18 @@ def managed_config(
     workspace_dir: str,
     default_model: str | None,
 ) -> dict[str, Any]:
-    """Managed key tree (domain-entities.md ManagedConfigKeys)."""
+    """Managed key tree (domain-entities.md ManagedConfigKeys).
+
+    ``model.api_key`` must be rendered explicitly: hermes' ``custom`` provider
+    reads its key from config (``model.api_key``), not from any env var
+    (``env_vars=()`` in the provider profile) — the ``${OPENAI_API_KEY}``
+    reference is expanded by hermes from the profile ``.env``, so the gateway
+    token never appears literally in config.yaml (S1).
+    """
     model: dict[str, Any] = {
         "provider": "custom",
         "base_url": daemon_v1_url,
+        "api_key": "${OPENAI_API_KEY}",
     }
     if default_model:
         model["default"] = default_model
@@ -52,6 +60,12 @@ def managed_config(
         "cwd": "/workspace",
         "docker_image": spec.docker_image,
         "container_persistent": True,
+        # Native hermes option: run the sandbox as the host uid/gid so every
+        # bind-mounted write (workspace, sandboxes) is host-owned — profile
+        # deletion then works without privileged cleanup. Trade-off accepted
+        # by decision 2026-07-03: no root inside the container (system package
+        # managers unavailable; user-level installers like pip/npm still work).
+        "docker_run_as_host_user": True,
         "docker_volumes": [f"{workspace_dir}:/workspace"],
         "docker_extra_args": network_extra_args(spec.network_mode),
     }

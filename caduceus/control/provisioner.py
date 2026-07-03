@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from caduceus.control.jobs import Job, JobEngine
+from caduceus.core.config import ConfigHolder
 from caduceus.core.errors import ConflictError, DomainValidationError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import Clock
@@ -20,7 +21,6 @@ from caduceus.core.registry import Registry
 from caduceus.core.types import (
     AgentRecord,
     AgentSpec,
-    CaduceusConfig,
     profile_name_for,
 )
 from caduceus.core.workspace import WorkspaceManager
@@ -54,7 +54,7 @@ class Provisioner:
         workspaces: WorkspaceManager,
         manager: GatewayProcessManager,
         jobs: JobEngine,
-        config: CaduceusConfig,
+        config: ConfigHolder,
         clock: Clock,
         *,
         health_check: HealthCheckFn,
@@ -65,7 +65,7 @@ class Provisioner:
         self._workspaces = workspaces
         self._manager = manager
         self._jobs = jobs
-        self._config = config
+        self._holder = config
         self._clock = clock
         self._health_check = health_check
         self._invalidate_tokens = invalidate_tokens
@@ -75,7 +75,7 @@ class Provisioner:
     def create_agent(self, spec: AgentSpec) -> Job:
         state = _CreateState()
         profile = profile_name_for(spec.name)
-        daemon_v1_url = f"http://127.0.0.1:{self._config.listen.port}/v1"
+        daemon_v1_url = f"http://127.0.0.1:{self._holder.config.listen.port}/v1"
 
         async def validate() -> None:
             if any(r.spec.name == spec.name for r in self._registry.list()):
@@ -96,7 +96,7 @@ class Provisioner:
             from caduceus.core.tokens import issue_token
 
             state.api_port = self._registry.allocate_port(
-                self._config.agents.port_base, reserved={self._config.listen.port}
+                self._holder.config.agents.port_base, reserved={self._holder.config.listen.port}
             )
             issued = issue_token(spec.name)
             state.token_plain = issued.plaintext
@@ -112,7 +112,7 @@ class Provisioner:
                 spec,
                 daemon_v1_url=daemon_v1_url,
                 workspace_dir=state.workspace_dir,
-                default_model=self._config.upstream.default_model,
+                default_model=self._holder.config.upstream.default_model,
             )
 
         async def env_write() -> None:
@@ -180,6 +180,8 @@ class Provisioner:
             await self._hermes.remove_containers(profile)
 
         async def profile_delete() -> None:
+            # sandboxes are host-owned (docker_run_as_host_user in the managed
+            # config), so the native hermes delete needs no privileged cleanup
             await self._hermes.delete_profile(profile)
 
         async def registry_remove() -> None:

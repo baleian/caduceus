@@ -127,6 +127,10 @@ class HermesAdapter:
                 detail=redact(result.stderr or result.stdout),
             )
 
+    # NOTE: profile deletion needs no privileged cleanup — sandboxes are
+    # host-owned because managed config sets terminal.docker_run_as_host_user
+    # (decision 2026-07-03; the native hermes option for exactly this).
+
     # -- managed configuration (FD2, logic §5) --------------------------------
 
     def apply_managed_config(

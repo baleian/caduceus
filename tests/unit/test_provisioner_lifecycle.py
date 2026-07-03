@@ -10,6 +10,7 @@ import pytest
 from caduceus.control.jobs import JobEngine
 from caduceus.control.lifecycle import LifecycleService
 from caduceus.control.provisioner import Provisioner
+from caduceus.core.config import ConfigHolder
 from caduceus.core.errors import NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import CommandResult
@@ -71,8 +72,12 @@ class Harness:
         self.jobs = JobEngine(self.sink, self.clock)
         self.invalidations = 0
         self.healthy = healthy
-        self.config = CaduceusConfig(
-            upstream=UpstreamConfig(base_url="http://localhost:11434/v1", default_model="hermes")
+        self.config = ConfigHolder(
+            CaduceusConfig(
+                upstream=UpstreamConfig(
+                    base_url="http://localhost:11434/v1", default_model="hermes"
+                )
+            )
         )
 
         async def health_check(port: int) -> bool:  # noqa: ARG001
@@ -205,3 +210,48 @@ async def test_lifecycle_start_stop_and_status() -> None:
     await lifecycle.start("coder")
     assert h.registry.get("coder").desired_state == "running"
     assert lifecycle.logs("coder") == ["line1"]
+
+
+async def test_holder_swap_renders_new_default_model() -> None:
+    """Fix B: an upstream hot-swap must be observed by later provisions —
+    the stale-config bug rendered the old model.default after PUT upstream."""
+    h = Harness()
+    job = h.provisioner.create_agent(AgentSpec(name="first"))
+    await h.drain()
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+
+    new_config = h.config.config.model_copy(
+        update={
+            "upstream": UpstreamConfig(
+                base_url="http://other.test/v1", default_model="swapped-model"
+            )
+        }
+    )
+    h.config.replace(new_config)
+
+    job2 = h.provisioner.create_agent(AgentSpec(name="second"))
+    await h.drain()
+    assert h.jobs.get(job2.id).snapshot()["state"] == "done"
+    config_text = h.hermes.read_config_text("cad-second")
+    assert "swapped-model" in config_text
+    assert "${OPENAI_API_KEY}" in config_text  # Fix A rendered for hermes custom provider
+
+
+async def test_managed_config_renders_host_user_sandbox() -> None:
+    """Decision 2026-07-03 (option C): sandboxes run as the host user, so
+    profile deletion never needs privileged cleanup — no scrub step exists."""
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    config_text = h.hermes.read_config_text("cad-coder")
+    assert config_text is not None
+    assert "docker_run_as_host_user: true" in config_text
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+    snap = h.jobs.get(job.id).snapshot()
+    assert snap["state"] == "done", snap
+    assert [s["name"] for s in snap["steps"]] == [
+        "gateway-stop", "containers-remove", "profile-delete", "registry-remove",
+    ]
+    assert not any(c[:3] == ["docker", "run", "--rm"] for c in h.runner.calls)

@@ -163,12 +163,19 @@ class RegistryFile(BaseModel):
         return self
 
 
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-_]*$")
+
+
 class UpstreamConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_url: str
+    default_model: str  # required: every agent profile renders model.default from it
     api_key_env: str | None = None  # S4: env-var reference only, never a literal key
-    default_model: str | None = None
+    # Extra request headers for gateway-style upstreams that authenticate via
+    # custom headers. Values may reference env vars as ``${VAR}`` — resolved
+    # at client build time, so secrets can stay out of config.yaml (S4).
+    extra_headers: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("base_url")
     @classmethod
@@ -176,6 +183,25 @@ class UpstreamConfig(BaseModel):
         if not re.fullmatch(r"https?://\S+", v.strip()):
             raise DomainValidationError(f"upstream base_url must be an http(s) URL: {v!r}")
         return v.strip().rstrip("/")
+
+    @field_validator("default_model")
+    @classmethod
+    def _model_required(cls, v: str) -> str:
+        if not v.strip():
+            raise DomainValidationError("upstream default_model must be a non-empty string")
+        return v.strip()
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _headers_safe(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, value in v.items():
+            if not _HEADER_NAME_RE.fullmatch(name):
+                raise DomainValidationError(f"invalid header name: {name!r}")
+            if name.lower() in ("host", "content-length", "transfer-encoding"):
+                raise DomainValidationError(f"header {name!r} cannot be overridden")
+            if any(c in value for c in "\r\n\x00"):
+                raise DomainValidationError(f"header {name!r} value contains control characters")
+        return v
 
 
 class ListenConfig(BaseModel):

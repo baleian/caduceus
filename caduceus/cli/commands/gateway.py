@@ -7,7 +7,7 @@ from typing import Annotated
 import typer
 
 from caduceus.cli.context import finish, get_client, get_renderer
-from caduceus.cli.errors import ExitCode
+from caduceus.cli.errors import CliError, ExitCode
 
 gateway_app = typer.Typer(no_args_is_help=True, help="Central gateway upstream & traffic")
 upstream_app = typer.Typer(no_args_is_help=True, help="Upstream LLM endpoint")
@@ -64,18 +64,44 @@ def upstream_get(ctx: typer.Context, json_output: JsonFlag = False) -> None:
     finish(ExitCode.OK)
 
 
+def _parse_headers(raw: list[str]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for item in raw:
+        name, sep, value = item.partition(":")
+        if not sep or not name.strip():
+            raise CliError(f"--header expects 'Name: value', got {item!r}", ExitCode.USAGE)
+        headers[name.strip()] = value.strip()
+    return headers
+
+
 @upstream_app.command("set")
 def upstream_set(
     ctx: typer.Context,
     base_url: str,
+    default_model: Annotated[
+        str,
+        typer.Option(..., help="default model id rendered into every agent profile"),
+    ],
     api_key_env: Annotated[
         str | None, typer.Option(help="env var NAME holding the upstream key (S4)")
     ] = None,
-    default_model: Annotated[str | None, typer.Option(help="default model id")] = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            help="extra request header 'Name: value' (repeatable; values may use ${ENV_VAR})",
+        ),
+    ] = None,
 ) -> None:
     """Hot-swap the upstream endpoint (S4) — in-flight requests drain on the old one."""
     result = get_client(ctx).put_upstream(
-        base_url, api_key_env=api_key_env, default_model=default_model
+        base_url,
+        default_model=default_model,
+        api_key_env=api_key_env,
+        extra_headers=_parse_headers(header or []),
     )
-    get_renderer(ctx).progress(f"upstream switched to {result.get('base_url')}")
+    get_renderer(ctx).progress(
+        f"upstream switched to {result.get('base_url')} "
+        f"(default model: {result.get('default_model')})"
+    )
     finish(ExitCode.OK)

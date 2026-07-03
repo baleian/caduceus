@@ -14,12 +14,12 @@ from caduceus.control.events import EventBus
 from caduceus.control.jobs import JobEngine
 from caduceus.control.lifecycle import LifecycleService
 from caduceus.control.provisioner import Provisioner
-from caduceus.core.config import CaduceusConfigStore
+from caduceus.core.config import CaduceusConfigStore, ConfigHolder
 from caduceus.core.errors import CaduceusError, ConflictError, NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.registry import Registry
 from caduceus.core.tokens import issue_token
-from caduceus.core.types import AgentSpec, CaduceusConfig, UpstreamConfig
+from caduceus.core.types import AgentSpec, UpstreamConfig
 from caduceus.proxy.traffic import TrafficStats
 from caduceus.proxy.upstream import UpstreamClient
 
@@ -29,11 +29,14 @@ MAX_BODY_BYTES = 1024 * 1024  # B1
 
 
 class UpstreamUpdate(BaseModel):
+    """PUT body is the complete upstream definition (full replace)."""
+
     model_config = ConfigDict(extra="forbid")
 
     base_url: str
+    default_model: str  # required — agent profiles render model.default from it
     api_key_env: str | None = None
-    default_model: str | None = None
+    extra_headers: dict[str, str] = {}
 
 
 class SoulUpdate(BaseModel):
@@ -82,7 +85,7 @@ def build_admin_router(
     traffic: TrafficStats,
     upstream: UpstreamClient,
     config_store: CaduceusConfigStore,
-    config: CaduceusConfig,
+    config: ConfigHolder,
     invalidate_tokens: Any,
     ws_auth: Any,  # Callable[[str], bool] — WS token check (middleware skips WS)
 ) -> APIRouter:
@@ -222,11 +225,13 @@ def build_admin_router(
     @router.get("/api/gateway")
     async def gateway_info() -> dict[str, Any]:
         return {
-            "listen": config.listen.model_dump(),
+            "listen": config.config.listen.model_dump(),
             "upstream": {
                 "base_url": upstream.config.base_url,
                 "default_model": upstream.config.default_model,
                 "api_key_env": upstream.config.api_key_env,  # env NAME only (S4)
+                # names only — values may embed literals the caller typed (S3)
+                "extra_headers": sorted(upstream.config.extra_headers),
             },
             "traffic": traffic.summary(),
         }
@@ -235,12 +240,13 @@ def build_admin_router(
     async def put_upstream(body: UpstreamUpdate) -> Any:
         try:
             new_upstream = UpstreamConfig(**body.model_dump())
-            new_config = config.model_copy(update={"upstream": new_upstream})
+            new_config = config.config.model_copy(update={"upstream": new_upstream})
+            upstream.swap(new_upstream)  # atomic (S4); fails closed on bad env refs
             config_store.save(new_config)
-            upstream.swap(new_upstream)  # atomic (S4)
+            config.replace(new_config)  # provisioner/reconciler observe it live
         except CaduceusError as exc:
             return _error_response(exc)
-        return {"base_url": new_upstream.base_url}
+        return {"base_url": new_upstream.base_url, "default_model": new_upstream.default_model}
 
     # -- jobs / status / events ---------------------------------------------------
 

@@ -26,7 +26,7 @@ def make_app(
     resolver = TokenResolver()
     resolver.rebuild({issued.token_hash: "coder"})
     upstream = UpstreamClient(
-        UpstreamConfig(base_url=UPSTREAM_URL),
+        UpstreamConfig(base_url=UPSTREAM_URL, default_model="m"),
         transport=httpx.MockTransport(upstream_handler),
     )
     traffic = TrafficStats(since_iso="2026-07-03T00:00:00Z")
@@ -176,11 +176,11 @@ async def test_hot_swap_switches_target() -> None:
     # (route closure holds the service; swap via the same UpstreamClient)
     # simpler: rebuild an app is not a swap test — instead test UpstreamClient directly
     upstream = UpstreamClient(
-        UpstreamConfig(base_url="http://a.test/v1"),
+        UpstreamConfig(base_url="http://a.test/v1", default_model="m"),
         transport=httpx.MockTransport(handler_a),
     )
     assert upstream.target_url("/v1/models") == "http://a.test/v1/models"
-    upstream.swap(UpstreamConfig(base_url="http://b.test/v1"))
+    upstream.swap(UpstreamConfig(base_url="http://b.test/v1", default_model="m"))
     assert upstream.target_url("/v1/models") == "http://b.test/v1/models"
     assert upstream.config.base_url == "http://b.test/v1"
 
@@ -204,3 +204,47 @@ class TestPU25ErrorMapping:
         # table order guarantees the specific mapping
         assert map_exception(httpx.ConnectTimeout("x"))[1] == "upstream_error"
         assert map_exception(httpx.ReadTimeout("x"))[0] == 504
+
+
+class TestExtraHeaders:
+    def test_env_references_expanded(self, monkeypatch) -> None:
+        monkeypatch.setenv("GATEWAY_KEY", "pk-secret")
+        upstream = UpstreamClient(
+            UpstreamConfig(
+                base_url="http://gw.test/v1",
+                default_model="m",
+                extra_headers={
+                    "x-gateway-api-key": "${GATEWAY_KEY}",
+                    "x-gateway-provider": "openai",
+                },
+            ),
+        )
+        assert upstream.client.headers["x-gateway-api-key"] == "pk-secret"
+        assert upstream.client.headers["x-gateway-provider"] == "openai"
+
+    def test_missing_env_reference_fails_closed(self, monkeypatch) -> None:
+        monkeypatch.delenv("NOPE_VAR", raising=False)
+        import pytest as _pytest
+
+        from caduceus.core.errors import ConfigError
+
+        with _pytest.raises(ConfigError):
+            UpstreamClient(
+                UpstreamConfig(
+                    base_url="http://gw.test/v1",
+                    default_model="m",
+                    extra_headers={"x-auth": "${NOPE_VAR}"},
+                ),
+            )
+
+    def test_explicit_headers_win_over_api_key_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("UP_KEY", "from-env")
+        upstream = UpstreamClient(
+            UpstreamConfig(
+                base_url="http://gw.test/v1",
+                default_model="m",
+                api_key_env="UP_KEY",
+                extra_headers={"Authorization": "Bearer virtual-key"},
+            ),
+        )
+        assert upstream.client.headers["authorization"] == "Bearer virtual-key"

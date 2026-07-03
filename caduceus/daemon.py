@@ -29,7 +29,7 @@ from caduceus.control.lifecycle import LifecycleService
 from caduceus.control.prober import HealthProber
 from caduceus.control.provisioner import Provisioner
 from caduceus.control.reconciler import Reconciler
-from caduceus.core.config import CaduceusConfigStore
+from caduceus.core.config import CaduceusConfigStore, ConfigHolder
 from caduceus.core.errors import CaduceusError, ConfigError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import (
@@ -120,6 +120,7 @@ def build_daemon(
     agent_transport: httpx.AsyncBaseTransport | None = None,
 ) -> Daemon:
     events = EventBus()
+    holder = ConfigHolder(config)  # live view for provisioner/reconciler/api
     registry = Registry(
         RegistryStore(caduceus_home / "registry.json", files, clock)
     )
@@ -152,7 +153,7 @@ def build_daemon(
 
     jobs = JobEngine(events, clock)
     provisioner = Provisioner(
-        registry, hermes, workspaces, manager, jobs, config, clock,
+        registry, hermes, workspaces, manager, jobs, holder, clock,
         health_check=health_check, invalidate_tokens=invalidate_tokens,
     )
     prober = HealthProber(
@@ -164,7 +165,7 @@ def build_daemon(
         health_of=prober.health_of, run_stop=_noop_run_stop,
     )
     reconciler = Reconciler(
-        registry, manager, hermes, lifecycle, config, clock, events,
+        registry, manager, hermes, lifecycle, holder, clock, events,
         interval_s=config.reconcile.interval_s,
     )
 
@@ -197,7 +198,7 @@ def build_daemon(
             traffic=traffic,
             upstream=upstream,
             config_store=config_store,
-            config=config,
+            config=holder,
             invalidate_tokens=invalidate_tokens,
             ws_auth=auth.verify,
         )

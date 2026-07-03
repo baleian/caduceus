@@ -182,3 +182,4 @@ class TestMisc:
     def test_redact_masks_long_hex(self) -> None:
         assert "***" in redact("token=" + "ab" * 20)
         assert "ab" * 20 not in redact("token=" + "ab" * 20)
+

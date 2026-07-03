@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 
 import httpx
 
@@ -22,6 +23,9 @@ NONSTREAM_TOTAL_TIMEOUT_S = 600.0
 OLD_CLIENT_LINGER_S = 600.0  # let in-flight streams finish before closing
 
 
+_ENV_REF_RE = re.compile(r"\$\{([^}]+)\}")
+
+
 def _resolve_api_key(config: UpstreamConfig) -> str | None:
     """S4: keys are referenced by env-var name, never stored literally."""
     if not config.api_key_env:
@@ -33,6 +37,35 @@ def _resolve_api_key(config: UpstreamConfig) -> str | None:
             "environment variable is empty or missing"
         )
     return value
+
+
+def _expand_env_refs(raw: str) -> tuple[str, list[str]]:
+    missing: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        value = os.environ.get(match.group(1), "").strip()
+        if not value:
+            missing.append(match.group(1))
+        return value
+
+    return _ENV_REF_RE.sub(_sub, raw), missing
+
+
+def _resolve_extra_headers(config: UpstreamConfig) -> dict[str, str]:
+    """Expand ``${VAR}`` references in header values (S4: secrets stay in env).
+
+    Fails closed: a reference to a missing/empty env var raises instead of
+    sending a header with a dangling placeholder to the upstream.
+    """
+    resolved: dict[str, str] = {}
+    for name, raw in config.extra_headers.items():
+        resolved[name], missing = _expand_env_refs(raw)
+        if missing:
+            raise ConfigError(
+                f"upstream header {name!r} references env var(s) "
+                f"{', '.join(sorted(set(missing)))} that are empty or missing"
+            )
+    return resolved
 
 
 class UpstreamClient:
@@ -75,6 +108,8 @@ class UpstreamClient:
         api_key = _resolve_api_key(config)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        # explicit headers win over api_key_env (gateway-specific auth schemes)
+        headers.update(_resolve_extra_headers(config))
         return httpx.AsyncClient(
             transport=self._transport,
             headers=headers,

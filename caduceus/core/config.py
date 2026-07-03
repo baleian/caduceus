@@ -16,6 +16,26 @@ from caduceus.core.types import CaduceusConfig
 _CONFIG_MODE = 0o600  # may reference secret env names; keep owner-only anyway
 
 
+class ConfigHolder:
+    """Shared mutable reference to the live config.
+
+    Long-lived services (provisioner, reconciler, admin API) read through this
+    holder so a hot-swapped upstream (PUT /api/gateway/upstream) is observed
+    immediately — a plain ``CaduceusConfig`` captured at startup goes stale
+    because pydantic models are frozen copies.
+    """
+
+    def __init__(self, config: CaduceusConfig) -> None:
+        self._config = config
+
+    @property
+    def config(self) -> CaduceusConfig:
+        return self._config
+
+    def replace(self, config: CaduceusConfig) -> None:
+        self._config = config
+
+
 class CaduceusConfigStore:
     def __init__(self, path: Path, files: FileStore) -> None:
         self._path = path

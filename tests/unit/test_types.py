@@ -136,4 +136,44 @@ class TestUpstreamConfig:
             UpstreamConfig(base_url="ftp://nope")
 
     def test_trailing_slash_normalized(self) -> None:
-        assert UpstreamConfig(base_url="http://localhost:11434/v1/").base_url.endswith("/v1")
+        assert UpstreamConfig(
+            base_url="http://localhost:11434/v1/", default_model="m"
+        ).base_url.endswith("/v1")
+
+
+class TestUpstreamConfigHardening:
+    def test_default_model_is_required(self) -> None:
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        with _pytest.raises(ValidationError):
+            UpstreamConfig(base_url="http://x/v1")  # type: ignore[call-arg]
+
+    def test_default_model_must_be_non_empty(self) -> None:
+        import pytest as _pytest
+
+        with _pytest.raises(DomainValidationError):
+            UpstreamConfig(base_url="http://x/v1", default_model="   ")
+
+    def test_extra_headers_reject_control_characters(self) -> None:
+        import pytest as _pytest
+
+        with _pytest.raises(DomainValidationError):
+            UpstreamConfig(
+                base_url="http://x/v1", default_model="m",
+                extra_headers={"x-a": "v\r\nInjected: 1"},
+            )
+
+    def test_extra_headers_reject_bad_names_and_hop_headers(self) -> None:
+        import pytest as _pytest
+
+        with _pytest.raises(DomainValidationError):
+            UpstreamConfig(
+                base_url="http://x/v1", default_model="m",
+                extra_headers={"bad name": "v"},
+            )
+        with _pytest.raises(DomainValidationError):
+            UpstreamConfig(
+                base_url="http://x/v1", default_model="m",
+                extra_headers={"Host": "evil"},
+            )

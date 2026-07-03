@@ -60,7 +60,7 @@ def test_run_init_noninteractive_warns_on_missing_key_env(tmp_path: Path) -> Non
 def test_run_init_interactive_updates_upstream(tmp_path: Path) -> None:
     home = tmp_path / "h"
     renderer, out_buf, err_buf = make_renderer()
-    answers = iter(["http://localhost:8000/v1", "MY_KEY"])
+    answers = iter(["http://localhost:8000/v1", "my-model", "MY_KEY"])
     code = run_init(
         renderer, home, interactive=True,
         input_fn=lambda _: next(answers), getenv=lambda _: "present",

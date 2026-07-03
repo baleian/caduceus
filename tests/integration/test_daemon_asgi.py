@@ -179,7 +179,7 @@ def test_full_agent_lifecycle_through_the_daemon() -> None:
         # S4: upstream hot swap via API — no agent config change needed
         swap = client.put(
             "/api/gateway/upstream",
-            json={"base_url": "http://upstream-b.test/v1"},
+            json={"base_url": "http://upstream-b.test/v1", "default_model": "hermes-b"},
             headers=headers,
         )
         assert swap.status_code == 200

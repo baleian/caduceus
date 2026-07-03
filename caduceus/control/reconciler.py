@@ -12,12 +12,13 @@ import logging
 from typing import Any
 
 from caduceus.control.lifecycle import LifecycleService
+from caduceus.core.config import ConfigHolder
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import Clock, EventSink
 from caduceus.core.process_manager import GatewayProcessManager
 from caduceus.core.registry import Registry
 from caduceus.core.render import diff_managed, managed_config
-from caduceus.core.types import PROFILE_PREFIX, CaduceusConfig, CoreEvent
+from caduceus.core.types import PROFILE_PREFIX, CoreEvent
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class Reconciler:
         manager: GatewayProcessManager,
         hermes: HermesAdapter,
         lifecycle: LifecycleService,
-        config: CaduceusConfig,
+        config: ConfigHolder,
         clock: Clock,
         events: EventSink,
         *,
@@ -39,7 +40,7 @@ class Reconciler:
         self._manager = manager
         self._hermes = hermes
         self._lifecycle = lifecycle
-        self._config = config
+        self._holder = config
         self._clock = clock
         self._events = events
         self._interval = interval_s
@@ -88,9 +89,9 @@ class Reconciler:
         for record in self._registry.list():
             expected = managed_config(
                 record.spec,
-                daemon_v1_url=f"http://127.0.0.1:{self._config.listen.port}/v1",
+                daemon_v1_url=f"http://127.0.0.1:{self._holder.config.listen.port}/v1",
                 workspace_dir=record.workspace_dir,
-                default_model=self._config.upstream.default_model,
+                default_model=self._holder.config.upstream.default_model,
             )
             try:
                 current = self._hermes.read_config_text(record.profile_name)
