@@ -109,17 +109,18 @@ async def test_sse_stream_relayed_verbatim() -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content=sse_body, headers={"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
 
     app, traffic, _, token = make_app(handler)
-    async with client_for(app) as client, client.stream(
-        "POST",
-        "/v1/chat/completions",
-        json={**CHAT_BODY, "stream": True},
-        headers={"Authorization": f"Bearer {token}"},
-    ) as response:
+    async with (
+        client_for(app) as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={**CHAT_BODY, "stream": True},
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
         received = "".join([chunk async for chunk in response.aiter_text()])
@@ -143,6 +144,72 @@ async def test_upstream_connect_error_maps_to_502() -> None:
     assert response.json()["error"]["code"] == "upstream_unreachable"
     assert "refused" not in response.text  # R3: no internal details
     assert traffic.agent("coder").errors == 1
+
+
+async def test_metadata_and_probe_requests_are_not_accounted() -> None:
+    # /v1/props and /v1/models/{id} 404 from an upstream that doesn't implement
+    # them; /v1/models lists 200. None are LLM-inference calls, so none touch the
+    # dashboard Requests/Errors, the recent list, or traffic.request events —
+    # yet the responses are still relayed verbatim to the caller.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404, json={"error": "not found"})
+
+    app, traffic, sink, token = make_app(handler)
+    auth = {"Authorization": f"Bearer {token}"}
+    async with client_for(app) as client:
+        props = await client.get("/v1/props", headers=auth)
+        model = await client.get("/v1/models/llamacpp/gemma-4-12b", headers=auth)
+        listing = await client.get("/v1/models", headers=auth)
+
+    assert (props.status_code, model.status_code, listing.status_code) == (404, 404, 200)
+    coder = traffic.agent("coder")
+    assert coder.requests == 0
+    assert coder.errors == 0
+    assert coder.last_request_at is None
+    assert traffic.recent("coder") == []
+    assert traffic.summary()["totals"] == {"requests": 0, "errors": 0}
+    assert [e for e in sink.events if e.kind == "traffic.request"] == []
+
+
+async def test_inference_call_is_the_only_accounted_request_amid_probes() -> None:
+    # A real chat call IS counted even amid probe noise → the dashboard reflects
+    # the one meaningful request, not the startup capability probes around it.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(200, json={"choices": []})
+        return httpx.Response(404, json={})
+
+    app, traffic, _, token = make_app(handler)
+    auth = {"Authorization": f"Bearer {token}"}
+    async with client_for(app) as client:
+        await client.get("/v1/props", headers=auth)
+        await client.get("/v1/models", headers=auth)
+        await client.post("/v1/chat/completions", json=CHAT_BODY, headers=auth)
+
+    coder = traffic.agent("coder")
+    assert coder.requests == 1
+    assert coder.errors == 0
+
+
+async def test_inference_error_status_is_still_accounted() -> None:
+    # A 4xx/5xx on an inference path is a meaningful error and IS counted —
+    # only non-inference (metadata/probe) traffic is silenced.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": {"message": "model not found"}})
+
+    app, traffic, _, token = make_app(handler)
+    async with client_for(app) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json=CHAT_BODY,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 404
+    coder = traffic.agent("coder")
+    assert coder.requests == 1
+    assert coder.errors == 1
 
 
 async def test_hot_swap_switches_target() -> None:

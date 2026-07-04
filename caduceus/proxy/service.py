@@ -40,6 +40,23 @@ ERROR_MAP: list[tuple[type[Exception], tuple[int, str, str]]] = [
 _SKIP_REQUEST_HEADERS = {"host", "authorization", "content-length", "connection"}
 _SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "connection"}
 
+# Only genuine LLM-inference calls are accounted in the dashboard Requests/Errors
+# numbers. Metadata / capability probes (/v1/models, /v1/models/{id}, /v1/props,
+# ...) are relayed normally but never counted — they are client-driven startup
+# noise that would otherwise dilute the "meaningful traffic" the dashboard reports.
+_INFERENCE_PATHS = frozenset(
+    {
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/responses",
+    }
+)
+
+
+def is_inference_path(path: str) -> bool:
+    return path.rstrip("/") in _INFERENCE_PATHS
+
 
 def map_exception(exc: Exception) -> tuple[int, str, str]:
     for exc_type, mapped in ERROR_MAP:
@@ -78,29 +95,26 @@ class ProxyService:
 
         body = await request.body()
         model = self._peek_model(body)
+        path = request.url.path
         started = self._clock.monotonic()
 
         upstream_request = self._upstream.client.build_request(
             method=request.method,
-            url=self._upstream.target_url(request.url.path),
+            url=self._upstream.target_url(path),
             content=body if body else None,
             headers=[
-                (k, v)
-                for k, v in request.headers.items()
-                if k.lower() not in _SKIP_REQUEST_HEADERS
+                (k, v) for k, v in request.headers.items() if k.lower() not in _SKIP_REQUEST_HEADERS
             ],
         )
         try:
-            upstream_response = await self._upstream.client.send(
-                upstream_request, stream=True
-            )
+            upstream_response = await self._upstream.client.send(upstream_request, stream=True)
         except Exception as exc:  # noqa: BLE001 - mapped fail-closed below
-            return self._fail(agent, model, started, exc)
+            return self._fail(agent, model, started, exc, path)
 
         content_type = upstream_response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            return self._relay_stream(agent, model, started, upstream_response)
-        return await self._relay_buffered(agent, model, started, upstream_response)
+            return self._relay_stream(agent, model, started, upstream_response, path)
+        return await self._relay_buffered(agent, model, started, upstream_response, path)
 
     # -- internals -----------------------------------------------------------
 
@@ -120,7 +134,12 @@ class ProxyService:
             return "unknown"
 
     async def _relay_buffered(
-        self, agent: str, model: str, started: float, upstream_response: httpx.Response
+        self,
+        agent: str,
+        model: str,
+        started: float,
+        upstream_response: httpx.Response,
+        path: str,
     ) -> Response:
         try:
             payload = await asyncio.wait_for(
@@ -128,9 +147,9 @@ class ProxyService:
             )
         except Exception as exc:  # noqa: BLE001
             await upstream_response.aclose()
-            return self._fail(agent, model, started, exc)
+            return self._fail(agent, model, started, exc, path)
         await upstream_response.aclose()
-        self._record(agent, model, upstream_response.status_code, started)
+        self._record(agent, model, upstream_response.status_code, started, path)
         return Response(
             content=payload,
             status_code=upstream_response.status_code,
@@ -142,7 +161,12 @@ class ProxyService:
         )
 
     def _relay_stream(
-        self, agent: str, model: str, started: float, upstream_response: httpx.Response
+        self,
+        agent: str,
+        model: str,
+        started: float,
+        upstream_response: httpx.Response,
+        path: str,
     ) -> StreamingResponse:
         service = self
 
@@ -154,7 +178,7 @@ class ProxyService:
                 # Runs on normal completion AND client disconnect → upstream
                 # request is cancelled and accounting always happens.
                 await upstream_response.aclose()
-                service._record(agent, model, upstream_response.status_code, started)
+                service._record(agent, model, upstream_response.status_code, started, path)
 
         return StreamingResponse(
             stream(),
@@ -163,13 +187,20 @@ class ProxyService:
             headers={"cache-control": "no-cache"},
         )
 
-    def _fail(self, agent: str, model: str, started: float, exc: Exception) -> JSONResponse:
+    def _fail(
+        self, agent: str, model: str, started: float, exc: Exception, path: str
+    ) -> JSONResponse:
         status, err_type, code = map_exception(exc)
         logger.warning("upstream failure for agent=%s: %s", agent, type(exc).__name__)
-        self._record(agent, model, status, started)
+        self._record(agent, model, status, started, path)
         return openai_error(status, "Upstream request failed", err_type, code)
 
-    def _record(self, agent: str, model: str, status: int, started: float) -> None:
+    def _record(self, agent: str, model: str, status: int, started: float, path: str) -> None:
+        # Account only genuine LLM-inference calls (FR-1/2/3). Metadata / capability
+        # probes are relayed to the client but never counted or emitted, so the
+        # dashboard Requests/Errors reflect meaningful traffic only.
+        if not is_inference_path(path):
+            return
         latency_ms = (self._clock.monotonic() - started) * 1000.0
         ts = self._clock.now_iso()
         self._traffic.record(
