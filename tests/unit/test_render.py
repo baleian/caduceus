@@ -74,6 +74,7 @@ def test_terminal_env_host_mirrors_managed_config() -> None:
     assert env["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] == "true"
     assert env["TERMINAL_CWD"] == "/home/u/.caduceus/workspaces/coder"
     assert env["TERMINAL_DOCKER_VOLUMES"] == "[]"
+    assert env["TERMINAL_HOME_MODE"] == "real"
 
 
 def test_terminal_env_network_modes() -> None:
@@ -106,6 +107,18 @@ def test_managed_config_renders_security_allow_private_urls() -> None:
 
     assert sec(AgentSpec(name="a")) is False  # default: browser SSRF guard on
     assert sec(AgentSpec(name="a", allow_private_urls=True)) is True
+
+
+def test_home_mode_pinned_to_real() -> None:
+    """hermes' default ``home_mode: auto`` flips subprocess HOME to the (empty)
+    profile home whenever its ``is_container()`` heuristic fires, and that
+    heuristic false-positives on any host with a running Docker container — so
+    browser auto-launch broke or worked depending on gateway start order.
+    Pinning ``real`` keeps subprocess HOME deterministic."""
+    managed = make_managed()
+    assert managed["terminal"]["home_mode"] == "real"
+    env = terminal_env(AgentSpec(name="a"), "/ws")
+    assert env["TERMINAL_HOME_MODE"] == "real"
 
 
 def test_merge_from_empty_creates_document() -> None:

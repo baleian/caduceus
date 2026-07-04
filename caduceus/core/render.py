@@ -60,6 +60,8 @@ def terminal_env(spec: AgentSpec, workspace_dir: str) -> dict[str, str]:
         # Mirror managed_config's pinned ``docker_volumes: []`` so hermes does
         # not skip its cwd auto-mount over a stale explicit ``:/workspace`` entry.
         "TERMINAL_DOCKER_VOLUMES": json.dumps([]),
+        # Mirror managed_config's ``home_mode: real`` (see that comment for why).
+        "TERMINAL_HOME_MODE": "real",
     }
     if spec.cpu is not None:
         env["TERMINAL_CONTAINER_CPU"] = str(spec.cpu)
@@ -121,6 +123,15 @@ def managed_config(
         "docker_image": spec.docker_image,
         "container_persistent": True,
         "docker_extra_args": network_extra_args(spec.network_mode),
+        # Host tool subprocesses (browser, ACP executors, …) must keep the real
+        # user HOME. hermes' default ``home_mode: auto`` switches subprocess
+        # HOME to the (empty) profile home whenever its ``is_container()``
+        # heuristic fires — and that heuristic false-positives on any host with
+        # a running Docker container (overlay mounts put ``containerd`` markers
+        # in /proc/self/mountinfo), which a Caduceus host always is. The result
+        # depended on gateway start order: agent-browser then looked for Chrome
+        # under ``{profile}/home`` and failed with "Chrome not found".
+        "home_mode": "real",
     }
     if spec.cpu is not None:
         terminal["container_cpu"] = spec.cpu
