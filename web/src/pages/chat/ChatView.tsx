@@ -58,6 +58,17 @@ import {
   type ChatState,
 } from '../../lib/chatMachine'
 import { INITIAL_WINDOW, growWindow, isPinned, windowStart } from '../../lib/chatScroll'
+import {
+  addNote,
+  appendText,
+  completeTool,
+  EMPTY_TURN,
+  fallbackText,
+  startTool,
+  turnIsEmpty,
+  type LiveToolCall,
+  type LiveTurn,
+} from '../../lib/liveTurn'
 import { redact } from '../../lib/redact'
 import {
   argsSummary,
@@ -99,27 +110,6 @@ const COMPOSER_MAX_HEIGHT_PX = 208
 function autoGrowComposer(el: HTMLTextAreaElement): void {
   el.style.height = 'auto'
   el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`
-}
-
-interface ToolCall {
-  tool: string
-  preview: string
-  error: boolean | null
-  duration: string
-}
-
-interface LiveTurn {
-  userText: string
-  assistantText: string
-  tools: ToolCall[]
-  notes: string[]
-}
-
-const EMPTY_TURN: LiveTurn = {
-  userText: '',
-  assistantText: '',
-  tools: [],
-  notes: [],
 }
 
 export function ChatView(): ReactNode {
@@ -378,7 +368,7 @@ export function ChatView(): ReactNode {
   }
 
   function pushNote(note: string): void {
-    setTurn((t) => ({ ...t, notes: [...t.notes, note] }))
+    setTurn((t) => addNote(t, note))
   }
 
   async function consumeStream(runId: string): Promise<void> {
@@ -387,7 +377,7 @@ export function ChatView(): ReactNode {
       switch (event.kind) {
         case 'message.delta': {
           const delta = typeof payload['delta'] === 'string' ? payload['delta'] : ''
-          setTurn((t) => ({ ...t, assistantText: t.assistantText + redact(delta, DELTA_LIMIT) }))
+          setTurn((t) => appendText(t, redact(delta, DELTA_LIMIT)))
           break
         }
         case 'reasoning.available': {
@@ -398,34 +388,20 @@ export function ChatView(): ReactNode {
           // live. Treat this purely as a reply fallback for providers that emit
           // no message.delta; the dedupe guard avoids echoing a streamed reply.
           const text = redact(String(payload['text'] ?? ''), DELTA_LIMIT)
-          setTurn((t) =>
-            text.trim() && !t.assistantText.trim() ? { ...t, assistantText: text } : t,
-          )
+          setTurn((t) => fallbackText(t, text))
           break
         }
         case 'tool.started': {
           const preview = redact(String(payload['preview'] ?? '')).slice(0, 120)
           const tool = String(payload['tool'] ?? '?')
-          setTurn((t) => ({
-            ...t,
-            tools: [...t.tools, { tool, preview, error: null, duration: '' }],
-          }))
+          setTurn((t) => startTool(t, tool, preview))
           break
         }
         case 'tool.completed': {
           const tool = String(payload['tool'] ?? '?')
           const failed = Boolean(payload['error'])
           const duration = String(payload['duration'] ?? '?')
-          setTurn((t) => {
-            const tools = [...t.tools]
-            for (let i = tools.length - 1; i >= 0; i--) {
-              if (tools[i]!.tool === tool && tools[i]!.error === null) {
-                tools[i] = { ...tools[i]!, error: failed, duration }
-                return { ...t, tools }
-              }
-            }
-            return { ...t, tools: [...tools, { tool, preview: '', error: failed, duration }] }
-          })
+          setTurn((t) => completeTool(t, tool, failed, duration))
           break
         }
         case 'approval.request': {
@@ -444,12 +420,10 @@ export function ChatView(): ReactNode {
           break
         }
         case 'run.completed': {
+          // reply fallback when no message.delta streamed — fallbackText no-ops
+          // once any reply text exists, so a streamed reply is never echoed
           const output = String(payload['output'] ?? '')
-          setTurn((t) =>
-            output && !t.assistantText.trim()
-              ? { ...t, assistantText: redact(output, DELTA_LIMIT) } // no deltas streamed
-              : t,
-          )
+          setTurn((t) => fallbackText(t, redact(output, DELTA_LIMIT)))
           break
         }
         case 'run.failed':
@@ -997,7 +971,7 @@ function ToolCallCard(props: {
 /** Streaming tool invocation (Q3=A): same card shell, header-only — live
  * events carry just a preview and, on completion, success/duration; the full
  * args/result card replaces it after end-of-turn re-hydration (W7). */
-function LiveToolCard(props: { tool: ToolCall }): ReactNode {
+function LiveToolCard(props: { tool: LiveToolCall }): ReactNode {
   const { tool } = props
   const state = tool.error === null ? 'running' : tool.error ? 'failed' : 'ok'
   return (
@@ -1084,9 +1058,8 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
   // No thinking block live: hermes does not stream the model's chain-of-thought
   // (only message.delta / tool.* / a reply relay). Reasoning is persisted and
   // shown once the turn completes and the transcript re-hydrates (W7).
-  const empty =
-    !turn.userText && !turn.assistantText && turn.tools.length === 0 && turn.notes.length === 0
-  if (empty) return null
+  if (turnIsEmpty(turn)) return null
+  const lastIndex = turn.segments.length - 1
   return (
     <div className="space-y-2" data-testid="chat-live-turn">
       {turn.userText && (
@@ -1094,21 +1067,30 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
           {turn.userText}
         </div>
       )}
-      {turn.tools.length > 0 && (
-        <div className="space-y-1.5">
-          {turn.tools.map((tool, index) => (
-            <LiveToolCard key={index} tool={tool} />
-          ))}
-        </div>
-      )}
-      {turn.assistantText && (
-        <div className="text-sm">
-          <Markdown text={turn.assistantText} />
-          {streaming && <span className="animate-pulse text-accent">▍</span>}
-        </div>
+      {/* FR-1: content and tool cards render in event-arrival order — the same
+          relative order the re-hydrated history path produces, so nothing jumps
+          when the turn ends. Segments only ever append or update in place, so
+          index keys are stable. */}
+      {turn.segments.map((seg, index) =>
+        seg.kind === 'tool' ? (
+          <LiveToolCard key={index} tool={seg.tool} />
+        ) : (
+          <div key={index} className="text-sm">
+            <Markdown text={seg.text} />
+            {/* cursor rides the trailing text only; a running tool below shows
+                its own spinner, so no stray cursor mid-conversation */}
+            {streaming && index === lastIndex && (
+              <span className="animate-pulse text-accent">▍</span>
+            )}
+          </div>
+        ),
       )}
       {turn.notes.map((note, index) => (
-        <p key={index} className="text-xs text-ink-dim italic" data-testid="chat-system-note">
+        <p
+          key={`note-${index}`}
+          className="text-xs text-ink-dim italic"
+          data-testid="chat-system-note"
+        >
           {note}
         </p>
       ))}
