@@ -78,6 +78,35 @@ class ProcessSpawner(Protocol):
 
 
 @runtime_checkable
+class ProcessSignaller(Protocol):
+    """Inspect + signal a process by raw PID (orphan gateway reaping).
+
+    Distinct from ProcessSpawner: that owns children we launched; this reaps a
+    gateway recorded on disk (``<profile>/gateway.pid``) that no in-memory
+    manager is tracking — e.g. survived a daemon restart. Identity is verified
+    (start_time + cmdline) before any signal, so a recycled PID is never hit.
+    """
+
+    def alive(self, pid: int) -> bool: ...
+
+    def start_time(self, pid: int) -> int | None:
+        """``/proc/<pid>/stat`` field 22 (starttime, clock ticks); None if gone."""
+        ...
+
+    def cmdline(self, pid: int) -> list[str] | None:
+        """Live argv from ``/proc/<pid>/cmdline``; None if gone."""
+        ...
+
+    def terminate(self, pid: int) -> None:
+        """SIGTERM; swallow ProcessLookupError (already dead)."""
+        ...
+
+    def kill(self, pid: int) -> None:
+        """SIGKILL; swallow ProcessLookupError."""
+        ...
+
+
+@runtime_checkable
 class FileStore(Protocol):
     """Filesystem access; all registry/profile writes go through here."""
 
@@ -200,6 +229,53 @@ class RealProcessSpawner:
             env={**os.environ, **env} if env else None,
         )
         return RealProcessHandle(proc)
+
+
+class RealProcessSignaller:
+    """Linux ``/proc`` + ``os.kill`` implementation of ProcessSignaller."""
+
+    def alive(self, pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # exists, just not signal-able by us
+        return True
+
+    def start_time(self, pid: int) -> int | None:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        # comm (field 2) may contain spaces/parens — split after the last ')'.
+        rparen = stat.rfind(")")
+        if rparen == -1:
+            return None
+        rest = stat[rparen + 2:].split()
+        # `rest` begins at field 3 (state); starttime is field 22 → index 19.
+        try:
+            return int(rest[19])
+        except (IndexError, ValueError):
+            return None
+
+    def cmdline(self, pid: int) -> list[str] | None:
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return None
+        parts = [p.decode("utf-8", "replace") for p in raw.split(b"\x00") if p]
+        return parts or None
+
+    def terminate(self, pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+
+    def kill(self, pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 
 
 class RealFileStore:

@@ -96,6 +96,28 @@ describe('shellReducer alert policy (alert-ux)', () => {
     expect(Object.keys(state.activeAlerts)).toEqual(['orphan:profile:cad-x'])
   })
 
+  it('alert-dismiss optimistically drops an active alert; a later snapshot is authoritative', () => {
+    let state = shellReducer(initialShellState, {
+      type: 'alerts-snapshot',
+      snapshot: {
+        alerts: [
+          { key: 'orphan:profile:cad-x', kind: 'orphan', resource: 'profile',
+            name: 'cad-x', since: 's1' },
+        ],
+        checked_at: 'c1',
+      },
+    })
+    expect(Object.keys(state.activeAlerts)).toEqual(['orphan:profile:cad-x'])
+
+    // user clicked "clean up" → optimistic removal
+    state = shellReducer(state, { type: 'alert-dismiss', key: 'orphan:profile:cad-x' })
+    expect(state.activeAlerts).toEqual({})
+
+    // unknown key is a no-op (returns same state reference)
+    const same = shellReducer(state, { type: 'alert-dismiss', key: 'nope' })
+    expect(same).toBe(state)
+  })
+
   it('snapshot-known conditions do not re-toast when live events repeat them', () => {
     let state = shellReducer(initialShellState, {
       type: 'alerts-snapshot',

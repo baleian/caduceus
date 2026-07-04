@@ -21,6 +21,7 @@ from caduceus.core.process_manager import GatewayProcessManager
 from caduceus.core.registry import Registry
 from caduceus.core.render import DEFAULT_API_SERVER_TOOLSETS
 from caduceus.core.types import (
+    PROFILE_PREFIX,
     AgentRecord,
     AgentSpec,
     profile_name_for,
@@ -204,6 +205,18 @@ class Provisioner:
         async def gateway_stop() -> None:
             if self._manager.is_managed(name):
                 await self._manager.stop(name)
+            # Belt-and-suspenders: a gateway the manager isn't tracking (survived
+            # a daemon restart, spawned out-of-band) keeps rewriting the profile
+            # dir and reappears as an orphan every reconcile. Reap it from the
+            # on-disk pidfile — the manager-independent source of truth — so
+            # profile-delete below isn't immediately undone. Never fail remove on
+            # reap trouble (Q2=A: visibility over strictness).
+            try:
+                outcome = await self._hermes.reap_gateway(profile, clock=self._clock)
+                if outcome == "survived":
+                    logger.warning("gateway for %s survived reap; removing anyway", profile)
+            except Exception:  # noqa: BLE001 - reap must not break removal
+                logger.warning("reap_gateway(%s) failed; proceeding with removal", profile)
 
         async def containers_remove() -> None:
             await self._hermes.remove_containers(profile)
@@ -235,3 +248,50 @@ class Provisioner:
                 ("registry-remove", registry_remove),
             ],
         )
+
+    # -- resolve orphan (user-driven alert cleanup) ------------------------------
+
+    def resolve_orphan(self, resource: str, name: str) -> Job:
+        """Reap + delete an orphaned ``cad-*`` resource on user request (the web
+        alert's "clean up" action). Guarded to genuine orphans: the name must be
+        a caduceus profile that is NOT in the registry, so a live agent's profile
+        can never be destroyed through this path."""
+        if resource not in ("profile", "container"):
+            raise DomainValidationError(f"unknown orphan resource {resource!r}")
+        if not name.startswith(PROFILE_PREFIX):
+            raise DomainValidationError(
+                f"{name!r} is not a caduceus-managed resource (prefix {PROFILE_PREFIX!r})"
+            )
+        if any(r.profile_name == name for r in self._registry.list()):
+            raise ConflictError(
+                f"{name!r} belongs to a live agent — remove the agent instead"
+            )
+
+        async def reap() -> None:
+            try:
+                await self._hermes.reap_gateway(name, clock=self._clock)
+            except Exception:  # noqa: BLE001 - reap must not break cleanup (Q2=A)
+                logger.warning("reap_gateway(%s) failed during orphan cleanup", name)
+
+        async def containers_remove() -> None:
+            await self._hermes.remove_containers(name)
+
+        async def profile_delete() -> None:
+            try:
+                await self._hermes.delete_profile(name)
+            except HermesError:
+                logger.warning(
+                    "orphan profile %s dir not fully removed; will resurface", name
+                )
+
+        if resource == "container":
+            steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+                ("containers-remove", containers_remove),
+            ]
+        else:
+            steps = [
+                ("reap", reap),
+                ("containers-remove", containers_remove),
+                ("profile-delete", profile_delete),
+            ]
+        return self._jobs.submit("resolve-orphan", name, steps)

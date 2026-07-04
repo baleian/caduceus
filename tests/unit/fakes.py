@@ -51,6 +51,58 @@ class InMemoryFileStore:
         return sorted(names)
 
 
+class FakeProc:
+    """One fake process: liveness, /proc metadata, and death-on-signal policy."""
+
+    def __init__(
+        self,
+        *,
+        alive: bool = True,
+        start_time: int | None = 100,
+        cmdline: list[str] | None = None,
+        dies_on: str | None = "SIGTERM",  # "SIGTERM" | "SIGKILL" | None (unkillable)
+    ) -> None:
+        self.alive = alive
+        self.start_time = start_time
+        self.cmdline = cmdline
+        self.dies_on = dies_on
+
+
+class FakeSignaller:
+    """ProcessSignaller fake: pid → FakeProc; records signals sent."""
+
+    def __init__(self, procs: dict[int, FakeProc] | None = None) -> None:
+        self.procs: dict[int, FakeProc] = procs or {}
+        self.signals: list[tuple[int, str]] = []
+
+    def _get(self, pid: int) -> FakeProc | None:
+        proc = self.procs.get(pid)
+        return proc if proc and proc.alive else None
+
+    def alive(self, pid: int) -> bool:
+        return self._get(pid) is not None
+
+    def start_time(self, pid: int) -> int | None:
+        proc = self._get(pid)
+        return proc.start_time if proc else None
+
+    def cmdline(self, pid: int) -> list[str] | None:
+        proc = self._get(pid)
+        return proc.cmdline if proc else None
+
+    def terminate(self, pid: int) -> None:
+        self.signals.append((pid, "SIGTERM"))
+        proc = self._get(pid)
+        if proc and proc.dies_on == "SIGTERM":
+            proc.alive = False
+
+    def kill(self, pid: int) -> None:
+        self.signals.append((pid, "SIGKILL"))
+        proc = self._get(pid)
+        if proc and proc.dies_on in ("SIGTERM", "SIGKILL"):
+            proc.alive = False
+
+
 class FakeClock:
     def __init__(self, start: float = 1000.0) -> None:
         self.time = start

@@ -51,6 +51,7 @@ export type ShellAction =
   | { type: 'alerts-snapshot'; snapshot: AlertsSnapshot }
   | { type: 'toast'; toast: Toast }
   | { type: 'toast-dismiss'; id: number }
+  | { type: 'alert-dismiss'; key: string }
 
 export const initialShellState: ShellState = {
   agents: [],
@@ -133,6 +134,14 @@ export function shellReducer(state: ShellState, action: ShellAction): ShellState
       return { ...state, toasts: boundedToasts(state.toasts, action.toast) }
     case 'toast-dismiss':
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) }
+    case 'alert-dismiss': {
+      // optimistic clear after a user-driven cleanup; the next snapshot poll is
+      // authoritative and will re-add it if the resource is somehow still there
+      if (!(action.key in state.activeAlerts)) return state
+      const activeAlerts = { ...state.activeAlerts }
+      delete activeAlerts[action.key]
+      return { ...state, activeAlerts }
+    }
   }
 }
 
@@ -155,6 +164,8 @@ export interface AppStore {
   refetchAgents: () => Promise<void>
   toast: (tone: Toast['tone'], text: string) => void
   dismissToast: (id: number) => void
+  /** optimistically drop an active alert (after user-driven cleanup) */
+  dismissAlert: (key: string) => void
 }
 
 const AppContext = createContext<AppStore | null>(null)
@@ -220,6 +231,10 @@ export function AppProvider(props: {
     dispatch({ type: 'toast-dismiss', id })
   }, [])
 
+  const dismissAlert = useCallback((key: string) => {
+    dispatch({ type: 'alert-dismiss', key })
+  }, [])
+
   // one global WS subscription (Q6=A); reconnect refetches REST (WPT-4)
   useEffect(() => {
     const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -262,8 +277,8 @@ export function AppProvider(props: {
   }, [hasActiveAlerts, refetchAlerts])
 
   const store = useMemo<AppStore>(
-    () => ({ client, state, refetchAgents, toast, dismissToast }),
-    [client, state, refetchAgents, toast, dismissToast],
+    () => ({ client, state, refetchAgents, toast, dismissToast, dismissAlert }),
+    [client, state, refetchAgents, toast, dismissToast, dismissAlert],
   )
 
   return <AppContext.Provider value={store}>{children}</AppContext.Provider>

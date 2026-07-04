@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -57,6 +57,15 @@ class ApprovalsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: ApprovalsMode
+
+
+class ResolveOrphan(BaseModel):
+    """POST body for user-driven orphan cleanup (web alert "clean up")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource: Literal["profile", "container"]
+    name: str
 
 
 class AllowPrivateUrlsUpdate(BaseModel):
@@ -347,6 +356,16 @@ def build_admin_router(
     async def active_alerts() -> dict[str, Any]:
         """Drift/orphan conditions active as of the last reconcile cycle."""
         return alerts_snapshot()
+
+    @router.post("/api/alerts/orphan/resolve", status_code=202)
+    async def resolve_orphan(body: ResolveOrphan) -> Any:
+        """Reap + delete an orphaned resource (web alert "clean up"). The alert
+        clears on the next reconcile cycle once the resource is gone."""
+        try:
+            job = provisioner.resolve_orphan(body.resource, body.name)
+        except CaduceusError as exc:
+            return _error_response(exc)
+        return {"job_id": job.id}
 
     @router.websocket("/api/events")
     async def events_ws(websocket: WebSocket) -> None:

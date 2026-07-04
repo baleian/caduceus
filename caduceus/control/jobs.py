@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 JobState = Literal["queued", "running", "done", "failed"]
 StepState = Literal["pending", "running", "ok", "failed", "skipped"]
-JobKind = Literal["create", "remove"]
+JobKind = Literal["create", "remove", "resolve-orphan"]
 
 StepFn = Callable[[], Awaitable[None]]
 

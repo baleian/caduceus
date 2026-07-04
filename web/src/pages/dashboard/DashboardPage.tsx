@@ -14,7 +14,7 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { Skeleton } from '../../components/ui/Skeleton'
 import { StatTile } from '../../components/ui/StatTile'
 import { bucketRequests } from '../../lib/timeseries'
-import type { GatewayInfo, JobSnapshot } from '../../lib/types'
+import type { ActiveAlert, GatewayInfo, JobSnapshot } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
 import { useAgentUsage } from '../../state/useAgentUsage'
 import { usePolling } from '../../state/usePolling'
@@ -25,11 +25,35 @@ const BUCKET_COUNT = 30 // 15 minutes of live traffic
 const fmt = (n: number): string => n.toLocaleString('en-US')
 
 export function DashboardPage(): ReactNode {
-  const { client, state, refetchAgents } = useApp()
+  const { client, state, refetchAgents, toast, dismissAlert } = useApp()
   const { usage } = useAgentUsage()
   const [info, setInfo] = useState<GatewayInfo | null>(null)
   const [jobs, setJobs] = useState<JobSnapshot[]>([])
   const [now, setNow] = useState(() => Date.now())
+  const [resolving, setResolving] = useState<ReadonlySet<string>>(() => new Set())
+
+  const cleanupOrphan = useCallback(
+    async (alert: ActiveAlert) => {
+      const resource = alert.resource
+      const name = alert.name
+      if ((resource !== 'profile' && resource !== 'container') || !name) return
+      setResolving((s) => new Set(s).add(alert.key))
+      try {
+        await client.resolveOrphan(resource, name)
+        dismissAlert(alert.key) // optimistic; the snapshot poll is authoritative
+        toast('info', `cleaning up orphan ${resource} — ${name}`)
+      } catch {
+        toast('error', `cleanup failed — ${name}`)
+      } finally {
+        setResolving((s) => {
+          const next = new Set(s)
+          next.delete(alert.key)
+          return next
+        })
+      }
+    },
+    [client, dismissAlert, toast],
+  )
 
   const refetch = useCallback(async () => {
     void refetchAgents()
@@ -197,15 +221,29 @@ export function DashboardPage(): ReactNode {
                 {alerts.map((alert) => (
                   <li
                     key={alert.key}
-                    className="rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1.5 text-xs"
+                    className="flex items-start justify-between gap-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-1.5 text-xs"
                   >
-                    <span className="font-medium text-warn">
-                      {alert.kind === 'drift' ? `drift: ${alert.reason ?? ''}` : `orphan ${alert.resource ?? ''}`}
-                    </span>
-                    <span className="text-ink"> — {alert.kind === 'drift' ? alert.agent : alert.name}</span>
-                    <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
-                      since {alert.since}
-                    </span>
+                    <div className="min-w-0">
+                      <span className="font-medium text-warn">
+                        {alert.kind === 'drift' ? `drift: ${alert.reason ?? ''}` : `orphan ${alert.resource ?? ''}`}
+                      </span>
+                      <span className="text-ink"> — {alert.kind === 'drift' ? alert.agent : alert.name}</span>
+                      <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
+                        since {alert.since}
+                      </span>
+                    </div>
+                    {alert.kind === 'orphan' && (alert.resource === 'profile' || alert.resource === 'container') && (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className="shrink-0"
+                        disabled={resolving.has(alert.key)}
+                        onClick={() => void cleanupOrphan(alert)}
+                        testId={`dashboard-orphan-cleanup-${alert.name ?? ''}`}
+                      >
+                        {resolving.has(alert.key) ? 'cleaning…' : 'clean up'}
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>

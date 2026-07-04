@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -11,7 +12,13 @@ from caduceus.core.errors import ConflictError, DockerError, HermesError
 from caduceus.core.hermes_adapter import HermesAdapter, redact
 from caduceus.core.ports import CommandResult
 from caduceus.core.types import AgentSpec
-from tests.unit.fakes import InMemoryFileStore, ScriptedRunner
+from tests.unit.fakes import (
+    FakeClock,
+    FakeProc,
+    FakeSignaller,
+    InMemoryFileStore,
+    ScriptedRunner,
+)
 
 HOME = Path("/home/u/.hermes")
 PROFILE = "cad-coder"
@@ -261,4 +268,123 @@ class TestMisc:
     def test_redact_masks_long_hex(self) -> None:
         assert "***" in redact("token=" + "ab" * 20)
         assert "ab" * 20 not in redact("token=" + "ab" * 20)
+
+
+REAP_PROFILE = "cad-reap"
+REAP_CMDLINE = ["/x/hermes", "-p", REAP_PROFILE, "gateway"]
+
+
+class TestReapGateway:
+    def _adapter(
+        self, signaller: FakeSignaller
+    ) -> tuple[HermesAdapter, InMemoryFileStore]:
+        files = InMemoryFileStore()
+        adapter = HermesAdapter(
+            ScriptedRunner(), files, hermes_home=HOME, signaller=signaller
+        )
+        return adapter, files
+
+    def _write_pidfile(self, files: InMemoryFileStore, data: object) -> None:
+        path = HOME / "profiles" / REAP_PROFILE / "gateway.pid"
+        files.write_text_atomic(path, json.dumps(data))
+
+    def _pidfile(self, **overrides: object) -> dict[str, object]:
+        data: dict[str, object] = {
+            "pid": 123,
+            "kind": "hermes-gateway",
+            "argv": ["/x/hermes", "gateway"],
+            "start_time": 100,
+        }
+        data.update(overrides)
+        return data
+
+    async def test_absent_when_no_pidfile(self) -> None:
+        sig = FakeSignaller()
+        adapter, _ = self._adapter(sig)
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "absent"
+        assert sig.signals == []
+
+    async def test_absent_when_malformed_pidfile(self) -> None:
+        sig = FakeSignaller()
+        adapter, files = self._adapter(sig)
+        files.write_text_atomic(
+            HOME / "profiles" / REAP_PROFILE / "gateway.pid", "not-json{"
+        )
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "absent"
+        assert sig.signals == []
+
+    async def test_absent_when_wrong_kind(self) -> None:
+        sig = FakeSignaller({123: FakeProc()})
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile(kind="something-else"))
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "absent"
+        assert sig.signals == []
+
+    async def test_dead_when_pid_not_alive(self) -> None:
+        sig = FakeSignaller({123: FakeProc(alive=False)})
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile())
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "dead"
+        assert sig.signals == []
+
+    async def test_mismatch_start_time_never_signals(self) -> None:
+        sig = FakeSignaller(
+            {123: FakeProc(start_time=999, cmdline=REAP_CMDLINE)}
+        )
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile(start_time=100))
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "mismatch"
+        assert sig.signals == []
+
+    async def test_mismatch_cmdline_never_signals(self) -> None:
+        # live process is a gateway for a DIFFERENT profile → do not touch it
+        sig = FakeSignaller(
+            {123: FakeProc(start_time=100, cmdline=["/x/hermes", "-p", "cad-other", "gateway"])}
+        )
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile(start_time=100))
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "mismatch"
+        assert sig.signals == []
+
+    async def test_mismatch_when_start_time_missing_from_pidfile(self) -> None:
+        sig = FakeSignaller({123: FakeProc(start_time=100, cmdline=REAP_CMDLINE)})
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile(start_time=None))
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "mismatch"
+        assert sig.signals == []
+
+    async def test_graceful_sigterm(self) -> None:
+        sig = FakeSignaller(
+            {123: FakeProc(start_time=100, cmdline=REAP_CMDLINE, dies_on="SIGTERM")}
+        )
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile())
+        assert await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock()) == "terminated"
+        assert sig.signals == [(123, "SIGTERM")]
+
+    async def test_escalates_to_sigkill(self) -> None:
+        sig = FakeSignaller(
+            {123: FakeProc(start_time=100, cmdline=REAP_CMDLINE, dies_on="SIGKILL")}
+        )
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile())
+        out = await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock(), grace_s=0.5)
+        assert out == "terminated"
+        assert sig.signals == [(123, "SIGTERM"), (123, "SIGKILL")]
+
+    async def test_survives_even_sigkill(self) -> None:
+        sig = FakeSignaller(
+            {123: FakeProc(start_time=100, cmdline=REAP_CMDLINE, dies_on=None)}
+        )
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile())
+        out = await adapter.reap_gateway(REAP_PROFILE, clock=FakeClock(), grace_s=0.5)
+        assert out == "survived"
+        assert sig.signals == [(123, "SIGTERM"), (123, "SIGKILL")]
+
+    def test_read_pidinfo_rejects_bool_pid(self) -> None:
+        sig = FakeSignaller()
+        adapter, files = self._adapter(sig)
+        self._write_pidfile(files, self._pidfile(pid=True))
+        assert adapter.read_gateway_pidinfo(REAP_PROFILE) is None
 

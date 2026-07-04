@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from caduceus.control.jobs import JobEngine
 from caduceus.control.lifecycle import LifecycleService
 from caduceus.control.provisioner import Provisioner
 from caduceus.core.config import ConfigHolder
-from caduceus.core.errors import NotFoundError
+from caduceus.core.errors import ConflictError, DomainValidationError, NotFoundError
 from caduceus.core.hermes_adapter import HermesAdapter
 from caduceus.core.ports import CommandResult
 from caduceus.core.registry import Registry, RegistryStore
@@ -22,7 +23,14 @@ from caduceus.core.types import (
     UpstreamConfig,
 )
 from caduceus.core.workspace import WorkspaceManager
-from tests.unit.fakes import FakeClock, InMemoryFileStore, RecordingEventSink, ScriptedRunner
+from tests.unit.fakes import (
+    FakeClock,
+    FakeProc,
+    FakeSignaller,
+    InMemoryFileStore,
+    RecordingEventSink,
+    ScriptedRunner,
+)
 
 HERMES_HOME = Path("/home/u/.hermes")
 CADUCEUS_HOME = Path("/home/u/.caduceus")
@@ -75,7 +83,10 @@ class Harness:
             RegistryStore(CADUCEUS_HOME / "registry.json", self.files, self.clock),
             port_in_use=lambda _: False,
         )
-        self.hermes = HermesAdapter(self.runner, self.files, hermes_home=HERMES_HOME)
+        self.signaller = FakeSignaller()
+        self.hermes = HermesAdapter(
+            self.runner, self.files, hermes_home=HERMES_HOME, signaller=self.signaller
+        )
         self.workspaces = WorkspaceManager(CADUCEUS_HOME / "workspaces", self.files)
         self.manager = FakeManager()
         self.jobs = JobEngine(self.sink, self.clock)
@@ -380,3 +391,123 @@ async def test_create_seeds_api_server_toolsets_and_unattended_defaults() -> Non
     assert list(loaded["platform_toolsets"]["api_server"]) == list(DEFAULT_API_SERVER_TOOLSETS)
     assert loaded["approvals"]["mode"] == "off"
     assert loaded["tool_loop_guardrails"]["hard_stop_enabled"] is True
+
+
+# -- orphan gateway reaping (remove hardening + resolve_orphan) ----------------
+
+
+def _seed_live_gateway(h: Harness, profile: str, pid: int = 777) -> None:
+    """Write a gateway.pid + register a matching live fake process."""
+    h.signaller.procs[pid] = FakeProc(
+        alive=True,
+        start_time=100,
+        cmdline=["/x/hermes", "-p", profile, "gateway"],
+        dies_on="SIGTERM",
+    )
+    h.files.write_text_atomic(
+        HERMES_HOME / "profiles" / profile / "gateway.pid",
+        json.dumps(
+            {"pid": pid, "kind": "hermes-gateway", "argv": ["/x/hermes", "gateway"],
+             "start_time": 100}
+        ),
+    )
+
+
+async def test_remove_reaps_gateway_manager_is_not_tracking() -> None:
+    # The orphan-alert bug: after a daemon restart the manager's in-memory map is
+    # empty, so is_managed() is False and the old gateway kept running. Remove must
+    # reap it from the on-disk pidfile anyway.
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    h.manager.managed.clear()  # simulate lost tracking (restart / out-of-band spawn)
+    _seed_live_gateway(h, "cad-coder")
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+    assert h.manager.stopped == []  # manager wasn't tracking it
+    assert (777, "SIGTERM") in h.signaller.signals  # but the gateway was reaped
+    with pytest.raises(NotFoundError):
+        h.registry.get("coder")
+
+
+async def test_remove_still_managed_also_reaps_pidfile() -> None:
+    # Managed stop AND pidfile reap both run (belt-and-suspenders).
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    _seed_live_gateway(h, "cad-coder")
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+    assert h.manager.stopped == ["coder"]
+    assert (777, "SIGTERM") in h.signaller.signals
+
+
+async def test_remove_survives_reap_failure() -> None:
+    # Q2=A: a reap that blows up must not fail the removal.
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+
+    async def boom(*_a: object, **_k: object) -> str:
+        raise RuntimeError("signaller exploded")
+
+    h.hermes.reap_gateway = boom  # type: ignore[method-assign]
+
+    job = h.provisioner.remove_agent("coder")
+    await h.drain()
+
+    assert h.jobs.get(job.id).snapshot()["state"] == "done"
+    with pytest.raises(NotFoundError):
+        h.registry.get("coder")
+
+
+async def test_resolve_orphan_profile_reaps_and_deletes() -> None:
+    h = Harness()
+    orphan = HERMES_HOME / "profiles" / "cad-ghost"
+    h.files.mkdir(orphan)
+    _seed_live_gateway(h, "cad-ghost", pid=555)
+
+    job = h.provisioner.resolve_orphan("profile", "cad-ghost")
+    await h.drain()
+
+    snap = h.jobs.get(job.id).snapshot()
+    assert snap["state"] == "done", snap
+    assert [s["name"] for s in snap["steps"]] == ["reap", "containers-remove", "profile-delete"]
+    assert (555, "SIGTERM") in h.signaller.signals
+    assert ["hermes", "profile", "delete", "cad-ghost", "--yes"] in h.runner.calls
+    assert str(orphan) not in h.files.dirs  # dir removed
+
+
+async def test_resolve_orphan_container_only_removes_containers() -> None:
+    h = Harness()
+    job = h.provisioner.resolve_orphan("container", "cad-ghost")
+    await h.drain()
+    snap = h.jobs.get(job.id).snapshot()
+    assert snap["state"] == "done"
+    assert [s["name"] for s in snap["steps"]] == ["containers-remove"]
+
+
+async def test_resolve_orphan_rejects_live_agent() -> None:
+    h = Harness()
+    h.provisioner.create_agent(AgentSpec(name="coder"))
+    await h.drain()
+    with pytest.raises(ConflictError):
+        h.provisioner.resolve_orphan("profile", "cad-coder")
+
+
+async def test_resolve_orphan_rejects_non_caduceus_name() -> None:
+    h = Harness()
+    with pytest.raises(DomainValidationError):
+        h.provisioner.resolve_orphan("profile", "not-ours")
+
+
+async def test_resolve_orphan_rejects_unknown_resource() -> None:
+    h = Harness()
+    with pytest.raises(DomainValidationError):
+        h.provisioner.resolve_orphan("everything", "cad-ghost")

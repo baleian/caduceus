@@ -16,6 +16,8 @@ verified against hermes source (hermes-research.md):
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -29,7 +31,13 @@ from caduceus.core.errors import (
     HermesError,
     NotFoundError,
 )
-from caduceus.core.ports import CommandRunner, FileStore
+from caduceus.core.ports import (
+    Clock,
+    CommandRunner,
+    FileStore,
+    ProcessSignaller,
+    RealProcessSignaller,
+)
 from caduceus.core.render import (
     managed_config,
     merge_config_text,
@@ -38,8 +46,12 @@ from caduceus.core.render import (
 )
 from caduceus.core.types import AgentSpec
 
+logger = logging.getLogger(__name__)
+
 HERMES_TIMEOUT_S = 60.0  # E1 / RESILIENCY-10
 DOCKER_TIMEOUT_S = 30.0
+GATEWAY_REAP_GRACE_S = 5.0  # SIGTERM → grace → SIGKILL window per signal
+_REAP_POLL_STEP_S = 0.25
 
 _ENV_FILE_MODE = 0o600  # G3
 _SECRET_RE = re.compile(r"[A-Fa-f0-9]{32,}")  # hex secrets (tokens, keys)
@@ -72,6 +84,17 @@ class SkillInfo:
     enabled: bool
 
 
+@dataclass(frozen=True)
+class GatewayPidInfo:
+    """Parsed ``<profile>/gateway.pid`` — hermes' durable record of the live
+    gateway, independent of any in-memory process manager state."""
+
+    pid: int
+    kind: str
+    argv: list[str]
+    start_time: int | None
+
+
 class HermesAdapter:
     def __init__(
         self,
@@ -81,12 +104,14 @@ class HermesAdapter:
         hermes_home: Path,
         hermes_bin: str = "hermes",
         docker_bin: str = "docker",
+        signaller: ProcessSignaller | None = None,
     ) -> None:
         self._runner = runner
         self._files = files
         self._home = hermes_home.expanduser()
         self._hermes = hermes_bin
         self._docker = docker_bin
+        self._signaller = signaller or RealProcessSignaller()
 
     async def _run(self, argv: list[str], *, timeout_s: float) -> Any:
         return await self._runner.run(argv, timeout_s=timeout_s)
@@ -104,6 +129,9 @@ class HermesAdapter:
 
     def _soul_path(self, profile: str) -> Path:
         return self.profile_dir(profile) / "SOUL.md"
+
+    def _gateway_pid_path(self, profile: str) -> Path:
+        return self.profile_dir(profile) / "gateway.pid"
 
     # -- profile lifecycle (logic §6) -----------------------------------------
 
@@ -174,6 +202,86 @@ class HermesAdapter:
         except CaduceusError:
             return False
         return bool(result.ok)
+
+    # -- gateway reaping (orphan prevention) ----------------------------------
+
+    def read_gateway_pidinfo(self, profile: str) -> GatewayPidInfo | None:
+        """Parse ``<profile>/gateway.pid``. Returns None when absent, malformed,
+        or not a hermes-gateway record — i.e. nothing safe to reap."""
+        path = self._gateway_pid_path(profile)
+        if not self._files.exists(path):
+            return None
+        try:
+            data = json.loads(self._files.read_text(path))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("kind") != "hermes-gateway":
+            return None
+        pid = data.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool):
+            return None
+        start = data.get("start_time")
+        start_time = start if isinstance(start, int) and not isinstance(start, bool) else None
+        raw_argv = data.get("argv")
+        argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else []
+        return GatewayPidInfo(pid=pid, kind="hermes-gateway", argv=argv, start_time=start_time)
+
+    def _gateway_identity_ok(self, profile: str, info: GatewayPidInfo) -> bool:
+        """Strict identity check (Q1=A) guarding against PID recycling: the live
+        process must have the exact recorded start_time AND a cmdline naming this
+        profile's gateway. Any gap → refuse to signal."""
+        if info.start_time is None:
+            return False
+        if self._signaller.start_time(info.pid) != info.start_time:
+            return False
+        cmd = self._signaller.cmdline(info.pid)
+        if not cmd:
+            return False
+        tokens = set(cmd)
+        return profile in tokens and "gateway" in tokens
+
+    async def reap_gateway(
+        self, profile: str, *, clock: Clock, grace_s: float = GATEWAY_REAP_GRACE_S
+    ) -> str:
+        """Terminate the gateway recorded in ``<profile>/gateway.pid`` regardless
+        of any in-memory manager state. SIGTERM → grace → SIGKILL, only after the
+        identity check passes. Returns one of:
+        ``absent`` (no pidfile), ``dead`` (stale pidfile, process gone),
+        ``mismatch`` (identity check failed — not signalled), ``terminated``,
+        ``survived`` (still alive after SIGKILL)."""
+        info = self.read_gateway_pidinfo(profile)
+        if info is None:
+            return "absent"
+        pid = info.pid
+        if not self._signaller.alive(pid):
+            return "dead"
+        if not self._gateway_identity_ok(profile, info):
+            logger.warning(
+                "gateway.pid for %s names pid %d but identity mismatch — not signalling",
+                profile, pid,
+            )
+            return "mismatch"
+        self._signaller.terminate(pid)
+        if await self._await_death(pid, grace_s, clock):
+            return "terminated"
+        logger.warning(
+            "gateway pid %d (%s) survived SIGTERM; escalating to SIGKILL", pid, profile
+        )
+        self._signaller.kill(pid)
+        if await self._await_death(pid, grace_s, clock):
+            return "terminated"
+        return "survived"
+
+    async def _await_death(self, pid: int, grace_s: float, clock: Clock) -> bool:
+        if not self._signaller.alive(pid):
+            return True
+        waited = 0.0
+        while waited < grace_s:
+            await clock.sleep(_REAP_POLL_STEP_S)
+            waited += _REAP_POLL_STEP_S
+            if not self._signaller.alive(pid):
+                return True
+        return not self._signaller.alive(pid)
 
     # Login-shell profile seeded into the default terminal sandbox home.
     # hermes captures its terminal env snapshot from ``bash -l`` (base.py

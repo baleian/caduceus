@@ -235,6 +235,13 @@ export class ApiClient {
     return this.request('GET', '/api/alerts')
   }
 
+  /** Reap + delete an orphaned resource (alert "clean up"). */
+  resolveOrphan(resource: 'profile' | 'container', name: string): Promise<{ job_id: string }> {
+    return this.request('POST', '/api/alerts/orphan/resolve', {
+      json: { resource, name },
+    })
+  }
+
   // -- agent api_server relay (S2) ---------------------------------------------
 
   agentApi<T>(agent: string, method: string, subpath: string, json?: unknown): Promise<T> {
