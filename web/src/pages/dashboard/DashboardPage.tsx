@@ -140,6 +140,15 @@ export function DashboardPage(): ReactNode {
             <CardHeader
               title="Live traffic"
               subtitle="proxied requests observed by this page (15 min window)"
+              actions={
+                <Link
+                  to="/observability"
+                  data-testid="dashboard-open-observability-link"
+                  className="text-xs font-medium text-accent hover:underline"
+                >
+                  Open Observability →
+                </Link>
+              }
             />
             {state.live.recentRequests.length === 0 ? (
               <p className="py-10 text-center text-sm text-ink-dim">

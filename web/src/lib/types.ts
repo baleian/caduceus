@@ -101,6 +101,130 @@ export interface DeepStatus {
   upstream: string
 }
 
+/* -- observability (observability-redesign S5) --------------------------------
+ * Two read-only aggregates served by the daemon. `usage` is hermes-native and
+ * persistent; `gateway` is TrafficStats — volatile, scoped "since daemon
+ * start". Shapes mirror caduceus/control/api.py responses exactly. */
+
+/** One zero-filled bucket of the persistent (session-derived) series. */
+export interface UsageBucket {
+  start_s: number
+  requests: number
+  sessions: number
+  messages: number
+  tool_calls: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  reasoning_tokens: number
+}
+
+export interface UsageKpis {
+  requests: number
+  sessions: number
+  active_sessions: number
+  messages: number
+  tool_calls: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  reasoning_tokens: number
+  cost_usd: number
+  actual_cost_usd: number
+  avg_duration_s: number
+  cache_hit_ratio: number
+}
+
+export interface DistributionRow {
+  model?: string
+  source?: string
+  requests: number
+  sessions: number
+  tokens: number
+  cost_usd: number
+}
+
+export interface RankingRow {
+  agent: string
+  reachable: boolean
+  requests: number
+  sessions: number
+  active_sessions: number
+  tokens: number
+  cost_usd: number
+  tool_calls: number
+}
+
+/** Per-session narrow-down row (metadata + metrics only; no content). */
+export interface UsageSessionRow {
+  id: string | null
+  title: string | null
+  model: string | null
+  source: string | null
+  started_at: number | null
+  last_active: number | null
+  ended_at: number | null
+  duration_s: number
+  requests: number
+  messages: number
+  tool_calls: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  reasoning_tokens: number
+  cost_usd: number
+}
+
+export interface UsageScope {
+  kpis: UsageKpis
+  series: UsageBucket[]
+  by_model: DistributionRow[]
+  by_source: DistributionRow[]
+}
+
+export type UsageRange = '24h' | '7d' | '30d'
+
+/** GET /api/observability/usage */
+export interface ObservabilityUsage {
+  generated_at: string
+  range: UsageRange
+  bucket_s: number
+  fleet: UsageScope & { ranking: RankingRow[] }
+  agent: (UsageScope & { name: string; reachable: boolean; sessions: UsageSessionRow[] }) | null
+  unreachable: string[]
+}
+
+export interface GatewayBucket {
+  start_s: number
+  requests: number
+  errors: number
+  avg_latency_ms: number
+}
+
+export interface GatewayRecentRow {
+  ts: string
+  agent: string
+  model: string
+  status: number
+  latency_ms: number
+}
+
+export type GatewayWindow = '15m' | '1h' | '24h'
+
+/** GET /api/observability/gateway — volatile ("since daemon start"). */
+export interface ObservabilityGateway {
+  since: string
+  window: GatewayWindow
+  bucket_s: number
+  totals: { requests: number; errors: number }
+  latency: { avg: number; p50: number; p95: number; max: number; count: number }
+  series: GatewayBucket[]
+  per_agent: Record<string, TrafficAgentSummary>
+  recent: GatewayRecentRow[]
+}
+
 /** api_server session (via /agents/{name}/api/api/sessions).
  * Token usage is hermes-native: cumulative per-session counts (cache split
  * out), populated by hermes' update_token_counts. Optional — older sessions

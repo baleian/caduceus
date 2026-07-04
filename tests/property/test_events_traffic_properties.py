@@ -7,7 +7,7 @@ from hypothesis import strategies as st
 
 from caduceus.control.events import EventBus
 from caduceus.core.types import CoreEvent
-from caduceus.proxy.traffic import TrafficSample, TrafficStats
+from caduceus.proxy.traffic import RING_SIZE, TrafficSample, TrafficStats
 from tests.property.strategies import agent_names
 
 
@@ -64,7 +64,5 @@ def test_pu2_2_counters_monotonic_and_ring_bounded(sample_list: list[TrafficSamp
         current = stats.agent("coder").requests
         assert current == prev_requests + 1  # strictly monotonic
         prev_requests = current
-    assert len(stats.recent("coder")) <= 100
-    assert [s.ts for s in stats.recent("coder")] == [
-        s.ts for s in sample_list[-100:]
-    ]
+    assert len(stats.recent("coder")) <= RING_SIZE
+    assert [s.ts for s in stats.recent("coder")] == [s.ts for s in sample_list[-RING_SIZE:]]

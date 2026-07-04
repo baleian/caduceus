@@ -16,6 +16,7 @@ import { ChatPage } from './pages/chat/ChatPage'
 import { ChatView } from './pages/chat/ChatView'
 import { DashboardPage } from './pages/dashboard/DashboardPage'
 import { GatewayPage } from './pages/gateway/GatewayPage'
+import { ObservabilityPage } from './pages/observability/ObservabilityPage'
 import { SystemPage } from './pages/system/SystemPage'
 import { AppProvider } from './state/AppStore'
 import { consumeFragmentToken, loadToken, saveToken } from './state/auth'
@@ -62,6 +63,8 @@ function AuthedApp(props: { token: string; onUnauthorized: () => void }): ReactN
           element: <Shell />,
           children: [
             { path: '/', element: <DashboardPage /> },
+            { path: '/observability', element: <ObservabilityPage /> },
+            { path: '/observability/:agent', element: <ObservabilityPage /> },
             { path: '/agents', element: <AgentsPage /> },
             { path: '/agents/:name', element: <AgentDetailPage /> },
             { path: '/chat', element: <ChatPage /> },

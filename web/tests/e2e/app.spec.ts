@@ -176,6 +176,32 @@ test('gateway: hot-swaps the upstream and shows traffic tables (F4)', async ({ p
   await expect(page.getByTestId('gateway-traffic-table')).toBeVisible()
 })
 
+test('observability: fleet → agent narrow-down → live tab (observability-redesign)', async ({
+  page,
+}) => {
+  await page.goto(`/observability#token=${TOKEN}`)
+  await expect(page.getByTestId('observability-page')).toBeVisible()
+  // fleet scope: KPI strip + ranking with the e2e agent
+  await expect(page.getByTestId('obs-kpi-requests')).toBeVisible()
+  await expect(page.getByTestId('obs-ranking-card')).toBeVisible()
+  await expect(page.getByTestId(`obs-rank-${AGENT}`)).toBeVisible()
+  // range preset switch keeps the page stable
+  await page.getByTestId('obs-range-7d').click()
+  await expect(page.getByTestId('obs-activity-card')).toBeVisible()
+  // drill into the agent scope via the ranking row
+  await page.getByTestId(`obs-rank-${AGENT}`).click()
+  await expect(page).toHaveURL(new RegExp(`/observability/${AGENT}`))
+  await expect(page.getByTestId('obs-sessions-card')).toBeVisible()
+  await expect(page.getByTestId('obs-latency-card')).toBeVisible()
+  // live tab: gateway (volatile) view
+  await page.getByTestId('obs-range-live').click()
+  await expect(page.getByTestId('obs-live-view')).toBeVisible()
+  await expect(page.getByTestId('obs-live-recent-card')).toBeVisible()
+  // scope select returns to fleet
+  await page.getByTestId('obs-scope-select').selectOption('')
+  await expect(page).toHaveURL(/\/observability$/)
+})
+
 test('system: deep status and job history render (Q2=A)', async ({ page }) => {
   await page.goto(`/system#token=${TOKEN}`)
   await expect(page.getByTestId('system-deep-status')).toContainText(AGENT)

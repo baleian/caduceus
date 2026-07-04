@@ -10,7 +10,11 @@ import type {
   ApprovalsMode,
   DeepStatus,
   GatewayInfo,
+  GatewayWindow,
   JobSnapshot,
+  ObservabilityGateway,
+  ObservabilityUsage,
+  UsageRange,
 } from '../lib/types'
 
 export const REQUEST_TIMEOUT_MS = 30_000
@@ -233,6 +237,20 @@ export class ApiClient {
   /** Drift/orphan conditions active as of the last reconcile cycle. */
   getAlerts(): Promise<AlertsSnapshot> {
     return this.request('GET', '/api/alerts')
+  }
+
+  // -- observability -------------------------------------------------------------
+
+  /** Persistent (hermes session) aggregate — daemon-side fan-out + bucketing. */
+  observabilityUsage(range: UsageRange, agent?: string): Promise<ObservabilityUsage> {
+    const query = agent ? `&agent=${encodeURIComponent(agent)}` : ''
+    return this.request('GET', `/api/observability/usage?range=${range}${query}`)
+  }
+
+  /** Volatile gateway aggregate (latency/errors) — "since daemon start". */
+  observabilityGateway(window: GatewayWindow, agent?: string): Promise<ObservabilityGateway> {
+    const query = agent ? `&agent=${encodeURIComponent(agent)}` : ''
+    return this.request('GET', `/api/observability/gateway?window=${window}${query}`)
   }
 
   /** Reap + delete an orphaned resource (alert "clean up"). */

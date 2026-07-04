@@ -6,10 +6,12 @@ import logging
 from collections.abc import Callable
 from typing import Any, Literal
 
+import httpx
 from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from caduceus.control import observability
 from caduceus.control.agent_proxy import build_agent_proxy_router  # noqa: F401 (re-export)
 from caduceus.control.events import EventBus
 from caduceus.control.jobs import JobEngine
@@ -22,12 +24,21 @@ from caduceus.core.ports import Clock
 from caduceus.core.registry import Registry
 from caduceus.core.tokens import issue_token
 from caduceus.core.types import AgentSpec, ApprovalsMode, CoreEvent, UpstreamConfig
-from caduceus.proxy.traffic import TrafficStats
+from caduceus.proxy.traffic import TrafficStats, parse_ts
 from caduceus.proxy.upstream import UpstreamClient
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 1024 * 1024  # B1
+
+# Live gateway windows: window seconds, bucket seconds, series source.
+# 15m reads the raw ring (fine 10s cells); 1h/24h read minute rollups
+# (24h re-bucketed to 15 min so the payload stays ~100 cells).
+GATEWAY_WINDOWS: dict[str, tuple[int, int, str]] = {
+    "15m": (900, 10, "samples"),
+    "1h": (3600, 60, "rollup"),
+    "24h": (86400, 900, "rollup"),
+}
 
 
 class UpstreamUpdate(BaseModel):
@@ -113,6 +124,7 @@ def build_admin_router(
     ws_auth: Any,  # Callable[[str], bool] — WS token check (middleware skips WS)
     alerts_snapshot: Callable[[], dict[str, Any]],
     clock: Clock,
+    agent_client: httpx.AsyncClient,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -329,6 +341,103 @@ def build_admin_router(
         except CaduceusError as exc:
             return _error_response(exc)
         return {"base_url": new_upstream.base_url, "default_model": new_upstream.default_model}
+
+    # -- observability (observability-redesign S4) ---------------------------------
+    #
+    # Two read-only aggregates, one per data source:
+    #   usage   — hermes-native session rows (persistent), daemon-side fan-out
+    #   gateway — TrafficStats rings/rollups (volatile, "since daemon start")
+    # Responses carry chart-ready grids; no conversation content, no secrets.
+
+    def _known_agent(name: str | None) -> bool:
+        if name is None:
+            return True
+        try:
+            registry.get(name)
+        except CaduceusError:
+            return False
+        return True
+
+    @router.get("/api/observability/usage")
+    async def observability_usage(
+        range_key: str = Query(default="24h", alias="range"),
+        agent: str | None = Query(default=None),
+    ) -> Any:
+        if range_key not in observability.RANGES:
+            return JSONResponse(
+                status_code=422,
+                content={"error": f"range must be one of {sorted(observability.RANGES)}"},
+            )
+        if not _known_agent(agent):
+            return JSONResponse(status_code=404, content={"error": "agent not found"})
+        now_iso = clock.now_iso()
+        now_s = parse_ts(now_iso) or 0.0
+        per_agent = await observability.collect_sessions(registry, agent_client)
+        all_sessions = [s for entry in per_agent for s in entry.sessions]
+        fleet = {
+            "kpis": observability.session_kpis(all_sessions, now_s=now_s),
+            "series": observability.bucket_sessions(all_sessions, now_s=now_s, range_key=range_key),
+            **observability.distributions(all_sessions),
+            "ranking": observability.ranking(per_agent, now_s=now_s),
+        }
+        agent_block: dict[str, Any] | None = None
+        if agent is not None:
+            entry = next((e for e in per_agent if e.agent == agent), None)
+            sessions = entry.sessions if entry else []
+            agent_block = {
+                "name": agent,
+                "reachable": bool(entry and entry.reachable),
+                "kpis": observability.session_kpis(sessions, now_s=now_s),
+                "series": observability.bucket_sessions(sessions, now_s=now_s, range_key=range_key),
+                **observability.distributions(sessions),
+                "sessions": observability.session_rows(sessions),
+            }
+        return {
+            "generated_at": now_iso,
+            "range": range_key,
+            "bucket_s": observability.RANGES[range_key][0],
+            "fleet": fleet,
+            "agent": agent_block,
+            "unreachable": [e.agent for e in per_agent if not e.reachable],
+        }
+
+    @router.get("/api/observability/gateway")
+    async def observability_gateway(
+        window: str = Query(default="1h"),
+        agent: str | None = Query(default=None),
+    ) -> Any:
+        if window not in GATEWAY_WINDOWS:
+            return JSONResponse(
+                status_code=422,
+                content={"error": f"window must be one of {sorted(GATEWAY_WINDOWS)}"},
+            )
+        if not _known_agent(agent):
+            return JSONResponse(status_code=404, content={"error": "agent not found"})
+        now_s = parse_ts(clock.now_iso()) or 0.0
+        window_s, bucket_s, source = GATEWAY_WINDOWS[window]
+        if source == "samples":
+            series = traffic.sample_series(agent, window_s=window_s, bucket_s=bucket_s, now_s=now_s)
+        else:
+            series = traffic.rollup_series(agent, window_s=window_s, bucket_s=bucket_s, now_s=now_s)
+        summary = traffic.summary()
+        totals = (
+            summary["totals"]
+            if agent is None
+            else {
+                "requests": summary["agents"].get(agent, {}).get("requests", 0),
+                "errors": summary["agents"].get(agent, {}).get("errors", 0),
+            }
+        )
+        return {
+            "since": summary["since"],  # volatile scope marker (daemon start)
+            "window": window,
+            "bucket_s": bucket_s,
+            "totals": totals,
+            "latency": traffic.latency_summary(agent, window_s=window_s, now_s=now_s),
+            "series": series,
+            "per_agent": summary["agents"],
+            "recent": traffic.recent_merged(agent, limit=100),
+        }
 
     # -- jobs / status / events ---------------------------------------------------
 

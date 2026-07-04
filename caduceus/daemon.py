@@ -232,6 +232,7 @@ def build_daemon(
             ws_auth=auth.verify,
             alerts_snapshot=reconciler.alerts_snapshot,
             clock=clock,
+            agent_client=agent_client,
         )
     )
     app.include_router(build_agent_proxy_router(registry, agent_client))

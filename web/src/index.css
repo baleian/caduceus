@@ -30,6 +30,7 @@
   --color-viz-1: #2a78d6;
   --color-viz-2: #1baf7a;
   --color-viz-3: #4a3aa7;
+  --color-viz-4: #0891b2;
 
   --gradient-brand: linear-gradient(135deg, #56b3fa 0%, #7c6cf0 55%, #cf63ee 100%);
 }
@@ -51,6 +52,7 @@
   --color-viz-1: #3987e5;
   --color-viz-2: #199e70;
   --color-viz-3: #9085e9;
+  --color-viz-4: #1191ad;
 }
 
 body {

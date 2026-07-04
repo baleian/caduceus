@@ -14,6 +14,7 @@ import {
   PanelLeftOpen,
   Settings2,
   Sun,
+  Telescope,
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
@@ -25,6 +26,7 @@ import { ToastArea } from './Toast'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/observability', label: 'Observability', icon: Telescope },
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/gateway', label: 'Gateway', icon: Network },
