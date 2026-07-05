@@ -1,23 +1,33 @@
-/** /chat — agent picker; the conversation lives at /chat/{name}. */
+/** /chat — resumes the last conversation (or the first agent); the picker is
+ * gone (redesign: agent selection is an inline switcher inside the conversation
+ * at /chat/{name}). Only the empty-fleet case renders here — and only once the
+ * first agent fetch has resolved, so a cold load doesn't flash "no agents". */
 
 import { MessageSquare } from 'lucide-react'
-import { useEffect, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Navigate } from 'react-router-dom'
 
-import { StatusBadge } from '../../components/StatusBadge'
-import { Card } from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
-import { PageHeader } from '../../components/ui/PageHeader'
+import { loadPrefs } from '../../state/prefs'
 import { useApp } from '../../state/AppStore'
 
 export function ChatPage(): ReactNode {
   const { state, refetchAgents } = useApp()
+  const [checked, setChecked] = useState(false)
 
   useEffect(() => {
-    void refetchAgents()
+    let alive = true
+    void Promise.resolve(refetchAgents()).finally(() => {
+      if (alive) setChecked(true)
+    })
+    return () => {
+      alive = false
+    }
   }, [refetchAgents])
 
   if (state.agents.length === 0) {
+    // avoid flashing the empty state before the first agent fetch resolves
+    if (!checked) return null
     return (
       <EmptyState
         icon={MessageSquare}
@@ -27,30 +37,7 @@ export function ChatPage(): ReactNode {
     )
   }
 
-  return (
-    <div className="mx-auto max-w-3xl">
-      <PageHeader title="Chat" description="pick an agent to start a conversation" />
-      <Card padded={false}>
-        <ul className="divide-y divide-edge">
-          {state.agents.map((agent) => (
-            <li key={agent.name}>
-              <Link
-                data-testid={`chat-agent-${agent.name}-link`}
-                to={`/chat/${encodeURIComponent(agent.name)}`}
-                className="flex items-center justify-between px-4 py-3.5 text-sm transition-colors hover:bg-panel-2"
-              >
-                <span className="inline-flex items-center gap-3 font-medium">
-                  <span className="rounded-lg bg-accent/10 p-1.5 text-accent">
-                    <MessageSquare size={14} aria-hidden />
-                  </span>
-                  {agent.name}
-                </span>
-                <StatusBadge value={state.live.agents[agent.name]?.health ?? agent.health} />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </Card>
-    </div>
-  )
+  const last = loadPrefs().lastChatAgent
+  const target = last && state.agents.some((a) => a.name === last) ? last : state.agents[0]!.name
+  return <Navigate to={`/chat/${encodeURIComponent(target)}`} replace />
 }

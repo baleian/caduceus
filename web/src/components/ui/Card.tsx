@@ -2,15 +2,16 @@ import { clsx } from 'clsx'
 import type { HTMLAttributes, ReactNode } from 'react'
 
 export function Card(
-  props: HTMLAttributes<HTMLDivElement> & { testId?: string; padded?: boolean },
+  props: HTMLAttributes<HTMLDivElement> & { testId?: string; padded?: boolean; compact?: boolean },
 ): ReactNode {
-  const { className, testId, padded = true, ...rest } = props
+  const { className, testId, padded = true, compact = false, ...rest } = props
   return (
     <div
       data-testid={testId}
       className={clsx(
-        'rounded-xl border border-edge bg-panel shadow-sm shadow-black/5',
-        padded && 'p-4',
+        'border border-edge bg-panel shadow-sm shadow-black/5',
+        compact ? 'rounded-lg' : 'rounded-xl',
+        padded && (compact ? 'p-3' : 'p-3.5'),
         className,
       )}
       {...rest}
@@ -26,7 +27,7 @@ export function CardHeader(props: {
   className?: string
 }): ReactNode {
   return (
-    <div className={clsx('mb-3 flex items-start justify-between gap-3', props.className)}>
+    <div className={clsx('mb-2.5 flex items-start justify-between gap-3', props.className)}>
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-ink">{props.title}</h2>
         {props.subtitle && <p className="mt-0.5 text-xs text-ink-dim">{props.subtitle}</p>}

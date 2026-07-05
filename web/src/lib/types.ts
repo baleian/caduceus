@@ -153,6 +153,9 @@ export interface RankingRow {
   sessions: number
   active_sessions: number
   tokens: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
   cost_usd: number
   tool_calls: number
 }

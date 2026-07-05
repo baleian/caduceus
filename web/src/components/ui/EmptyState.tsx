@@ -12,10 +12,10 @@ export function EmptyState(props: {
   return (
     <div
       data-testid={props.testId}
-      className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge-strong px-6 py-14 text-center"
+      className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-edge-strong px-6 py-10 text-center"
     >
-      <span className="rounded-xl bg-panel-2 p-3 text-ink-faint">
-        <Icon size={22} strokeWidth={1.75} aria-hidden />
+      <span className="rounded-xl bg-panel-2 p-2.5 text-ink-faint">
+        <Icon size={20} strokeWidth={1.75} aria-hidden />
       </span>
       <p className="mt-1 text-sm font-medium text-ink">{props.title}</p>
       {props.description && <p className="max-w-sm text-xs text-ink-dim">{props.description}</p>}

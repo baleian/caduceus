@@ -9,8 +9,6 @@ import type { ReactNode } from 'react'
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Legend,
   ResponsiveContainer,
@@ -76,76 +74,5 @@ export function TrafficChart(props: { buckets: TrafficBucket[]; height?: number 
   )
 }
 
-export interface UsageRow {
-  agent: string
-  inputTokens: number
-  cacheReadTokens: number
-  outputTokens: number
-}
-
-/** Per-agent token usage, horizontal stacked bars. Fixed series order
- * input → cache → output (validated adjacency); 1px panel stroke acts as the
- * spacer between stacked segments. */
-export function UsageBarChart(props: { rows: UsageRow[]; height?: number }): ReactNode {
-  const height = props.height ?? Math.max(120, 28 * props.rows.length + 72)
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <BarChart
-        data={props.rows}
-        layout="vertical"
-        margin={{ top: 4, right: 12, bottom: 0, left: 8 }}
-      >
-        <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" horizontal={false} />
-        <XAxis
-          type="number"
-          tick={AXIS_TICK}
-          tickLine={false}
-          axisLine={false}
-          tickFormatter={(v: number) => v.toLocaleString('en-US')}
-        />
-        <YAxis
-          type="category"
-          dataKey="agent"
-          width={110}
-          tick={AXIS_TICK}
-          tickLine={false}
-          axisLine={false}
-        />
-        <Tooltip
-          contentStyle={TOOLTIP_STYLE}
-          cursor={{ fill: 'var(--color-panel-2)', opacity: 0.5 }}
-          formatter={(v) => (typeof v === 'number' ? v.toLocaleString('en-US') : String(v ?? ''))}
-        />
-        <Legend wrapperStyle={LEGEND_STYLE} iconSize={9} />
-        <Bar
-          dataKey="inputTokens"
-          name="input"
-          stackId="tokens"
-          fill="var(--color-viz-1)"
-          stroke="var(--color-panel)"
-          strokeWidth={1}
-          isAnimationActive={false}
-        />
-        <Bar
-          dataKey="cacheReadTokens"
-          name="cache read"
-          stackId="tokens"
-          fill="var(--color-viz-2)"
-          stroke="var(--color-panel)"
-          strokeWidth={1}
-          isAnimationActive={false}
-        />
-        <Bar
-          dataKey="outputTokens"
-          name="output"
-          stackId="tokens"
-          fill="var(--color-viz-3)"
-          stroke="var(--color-panel)"
-          strokeWidth={1}
-          radius={[0, 3, 3, 0]}
-          isAnimationActive={false}
-        />
-      </BarChart>
-    </ResponsiveContainer>
-  )
-}
+// (UsageBarChart removed — per-agent token usage now lives on Observability's
+// stacked ranking bar; the Dashboard token summary is a compact readout.)

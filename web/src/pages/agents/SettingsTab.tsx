@@ -10,6 +10,7 @@ import { ConfirmModal } from '../../components/ConfirmModal'
 import { Button } from '../../components/ui/Button'
 import { Card, CardHeader } from '../../components/ui/Card'
 import { INPUT_CLASS, INPUT_MONO_CLASS } from '../../components/ui/Field'
+import { Switch } from '../../components/ui/Switch'
 import { MAX_SOUL_BYTES, parseToolsetsText, renderToolsetsText, utf8Bytes } from '../../lib/forms'
 import type { ApprovalsMode } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
@@ -151,8 +152,10 @@ export function SettingsTab(props: { agent: string }): ReactNode {
     return <p className="text-sm text-bad">{loadError}</p>
   }
 
+  const enabledCount = skills.filter((s) => s.enabled).length
+
   return (
-    <div className="max-w-4xl space-y-4">
+    <div className="space-y-4">
       {needsRestart && (
         <div
           data-testid="settings-restart-banner"
@@ -169,139 +172,136 @@ export function SettingsTab(props: { agent: string }): ReactNode {
         </div>
       )}
 
-      <Card>
-        <CardHeader
-          title="Persona (SOUL.md)"
-          actions={
-            <Button
-              testId="settings-soul-save-button"
-              disabled={!soulDirty}
-              onClick={() => void saveSoul()}
-            >
-              Save persona
-            </Button>
-          }
-        />
-        <textarea
-          data-testid="settings-soul-editor"
-          rows={12}
-          className={INPUT_MONO_CLASS}
-          value={soul}
-          onChange={(e) => {
-            setSoul(e.target.value)
-            setSoulDirty(true)
-          }}
-        />
-        <p className="mt-1.5 text-xs text-ink-faint">{utf8Bytes(soul)} bytes / 512KB</p>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader
+            title="Persona (SOUL.md)"
+            subtitle={`${utf8Bytes(soul)} bytes / 512KB`}
+            actions={
+              <Button
+                testId="settings-soul-save-button"
+                disabled={!soulDirty}
+                onClick={() => void saveSoul()}
+              >
+                Save persona
+              </Button>
+            }
+          />
+          <textarea
+            data-testid="settings-soul-editor"
+            rows={8}
+            className={INPUT_MONO_CLASS}
+            value={soul}
+            onChange={(e) => {
+              setSoul(e.target.value)
+              setSoulDirty(true)
+            }}
+          />
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Toolsets"
+            subtitle="api_server platform — one toolset per line"
+            actions={
+              <Button
+                testId="settings-toolsets-save-button"
+                disabled={!toolsetsDirty}
+                onClick={() => void saveToolsets()}
+              >
+                Save toolsets
+              </Button>
+            }
+          />
+          <textarea
+            data-testid="settings-toolsets-editor"
+            rows={6}
+            placeholder="one toolset per line"
+            className={INPUT_MONO_CLASS}
+            value={toolsetsText}
+            onChange={(e) => {
+              setToolsetsText(e.target.value)
+              setToolsetsDirty(true)
+            }}
+          />
+        </Card>
+      </div>
 
       <Card>
-        <CardHeader title="Skills" />
+        <CardHeader
+          title="Skills"
+          subtitle={
+            skills.length === 0 ? undefined : `${enabledCount} of ${skills.length} enabled`
+          }
+        />
         {skills.length === 0 ? (
           <p className="text-sm text-ink-dim">No skills found for this profile.</p>
         ) : (
-          <ul className="divide-y divide-edge rounded-lg border border-edge">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {skills.map((skill) => (
-              <li key={skill.name} className="flex items-center justify-between px-3 py-2 text-sm">
-                <span className="font-mono">{skill.name}</span>
-                <button
-                  data-testid={`settings-skill-${skill.name}-toggle`}
-                  role="switch"
-                  aria-checked={skill.enabled}
-                  onClick={() => void toggleSkill(skill)}
-                  className={`rounded-full px-3 py-0.5 text-xs font-medium transition-colors ${
-                    skill.enabled ? 'bg-ok/15 text-ok' : 'bg-ink-dim/15 text-ink-dim'
-                  }`}
-                >
-                  {skill.enabled ? 'enabled' : 'disabled'}
-                </button>
-              </li>
+              <div
+                key={skill.name}
+                className="flex items-center justify-between gap-2 rounded-lg border border-edge bg-panel-2 px-3 py-2"
+              >
+                <span className="min-w-0 truncate font-mono text-xs">{skill.name}</span>
+                <Switch
+                  testId={`settings-skill-${skill.name}-toggle`}
+                  checked={skill.enabled}
+                  onChange={() => void toggleSkill(skill)}
+                  aria-label={`toggle ${skill.name}`}
+                />
+              </div>
             ))}
-          </ul>
+          </div>
         )}
       </Card>
 
-      <Card>
-        <CardHeader
-          title="Toolsets"
-          subtitle="api_server platform — one toolset per line"
-          actions={
-            <Button
-              testId="settings-toolsets-save-button"
-              disabled={!toolsetsDirty}
-              onClick={() => void saveToolsets()}
+      <Card padded={false}>
+        <div className="divide-y divide-edge">
+          <PolicyRow
+            title="Approvals mode"
+            description="tool-approval policy rendered into the managed config"
+          >
+            <select
+              data-testid="settings-approvals-select"
+              className={`${INPUT_CLASS} w-auto`}
+              value={approvals}
+              onChange={(e) => void saveApprovals(e.target.value as ApprovalsMode)}
             >
-              Save toolsets
+              <option value="off">off (unattended)</option>
+              <option value="smart">smart</option>
+              <option value="manual">manual</option>
+            </select>
+          </PolicyRow>
+
+          <PolicyRow
+            title="Browser private URLs"
+            description="let the browser tool reach localhost / private addresses (SSRF opt-in)"
+          >
+            <Switch
+              testId="settings-allow-private-urls-toggle"
+              aria-label="Browser private URLs"
+              checked={allowPrivateUrls}
+              onColor="ok"
+              size="md"
+              onChange={(next) => void saveAllowPrivateUrls(next)}
+              label={allowPrivateUrls ? 'allowed' : 'blocked'}
+            />
+          </PolicyRow>
+
+          <PolicyRow
+            title="Gateway token"
+            description="rotate re-issues the proxy credential into the profile .env — the plaintext is never displayed (S3)"
+          >
+            <Button
+              variant="outline"
+              testId="settings-token-rotate-button"
+              onClick={() => setRotateOpen(true)}
+            >
+              Rotate token
             </Button>
-          }
-        />
-        <textarea
-          data-testid="settings-toolsets-editor"
-          rows={4}
-          placeholder="one toolset per line"
-          className={INPUT_MONO_CLASS}
-          value={toolsetsText}
-          onChange={(e) => {
-            setToolsetsText(e.target.value)
-            setToolsetsDirty(true)
-          }}
-        />
-      </Card>
-
-      <Card className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold">Approvals mode</h2>
-          <p className="mt-0.5 text-xs text-ink-dim">
-            tool-approval policy rendered into the managed config
-          </p>
+          </PolicyRow>
         </div>
-        <select
-          data-testid="settings-approvals-select"
-          className={`${INPUT_CLASS} w-auto`}
-          value={approvals}
-          onChange={(e) => void saveApprovals(e.target.value as ApprovalsMode)}
-        >
-          <option value="off">off (unattended)</option>
-          <option value="smart">smart</option>
-          <option value="manual">manual</option>
-        </select>
-      </Card>
-
-      <Card className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold">Browser private URLs</h2>
-          <p className="mt-0.5 text-xs text-ink-dim">
-            let the browser tool reach localhost / private addresses (SSRF opt-in)
-          </p>
-        </div>
-        <button
-          data-testid="settings-allow-private-urls-toggle"
-          role="switch"
-          aria-checked={allowPrivateUrls}
-          onClick={() => void saveAllowPrivateUrls(!allowPrivateUrls)}
-          className={`rounded-full px-3 py-0.5 text-xs font-medium transition-colors ${
-            allowPrivateUrls ? 'bg-ok/15 text-ok' : 'bg-ink-dim/15 text-ink-dim'
-          }`}
-        >
-          {allowPrivateUrls ? 'allowed' : 'blocked'}
-        </button>
-      </Card>
-
-      <Card className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold">Gateway token</h2>
-          <p className="mt-0.5 text-xs text-ink-dim">
-            rotate re-issues the proxy credential into the profile .env — the plaintext is never
-            displayed (S3)
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          testId="settings-token-rotate-button"
-          onClick={() => setRotateOpen(true)}
-        >
-          Rotate token
-        </Button>
       </Card>
 
       <ConfirmModal
@@ -312,6 +312,18 @@ export function SettingsTab(props: { agent: string }): ReactNode {
         onConfirm={() => void rotate()}
         onCancel={() => setRotateOpen(false)}
       />
+    </div>
+  )
+}
+
+function PolicyRow(props: { title: string; description: string; children: ReactNode }): ReactNode {
+  return (
+    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold">{props.title}</h3>
+        <p className="mt-0.5 text-xs text-ink-dim">{props.description}</p>
+      </div>
+      <div className="shrink-0">{props.children}</div>
     </div>
   )
 }

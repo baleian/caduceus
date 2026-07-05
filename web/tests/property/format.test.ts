@@ -5,12 +5,16 @@ import { describe, expect, it } from 'vitest'
 
 import {
   bucketLabel,
+  deriveSessionTitle,
+  formatCost,
   formatCount,
   formatDuration,
   formatMs,
   formatPct,
   formatUsd,
+  isMachineId,
   shortDateTime,
+  timeAgo,
 } from '../../src/lib/format'
 
 describe('formatCount', () => {
@@ -88,5 +92,56 @@ describe('bucketLabel / shortDateTime', () => {
     expect(shortDateTime(Date.parse('2026-07-04T13:22:00') / 1000)).toMatch(
       /^\d{2}\/\d{2} \d{2}:\d{2}$/,
     )
+  })
+})
+
+describe('timeAgo (fractional-epoch bug fix)', () => {
+  it('parses a fractional epoch-seconds string instead of echoing it raw', () => {
+    const now = 1_783_148_691_503 + 120_000
+    const out = timeAgo('1783148691.5026166', now)
+    expect(out).toBe('2m ago')
+    expect(out).not.toContain('1783148691')
+  })
+
+  it('handles ISO, ms-epoch and absent inputs', () => {
+    const now = Date.parse('2026-07-04T12:00:00Z')
+    expect(timeAgo(new Date(now - 5_000).toISOString(), now)).toBe('just now')
+    expect(timeAgo(now - 3_600_000, now)).toBe('1h ago') // already-ms epoch (≥1e11)
+    expect(timeAgo(null)).toBe('')
+    expect(timeAgo('')).toBe('')
+  })
+})
+
+describe('formatCost', () => {
+  it('hides zero/absent as an em-dash and formats non-zero', () => {
+    expect(formatCost(0)).toBe('—')
+    expect(formatCost(null)).toBe('—')
+    expect(formatCost(undefined)).toBe('—')
+    expect(formatCost(Number.NaN)).toBe('—')
+    expect(formatCost(0.0042)).toBe('$0.0042')
+    expect(formatCost(1.5)).toBe('$1.50')
+  })
+})
+
+describe('session titles', () => {
+  it('detects opaque machine ids', () => {
+    expect(isMachineId('api_1783148667_43246421')).toBe(true)
+    expect(isMachineId('1783148691.5026166')).toBe(true)
+    expect(isMachineId('renamed-e2e')).toBe(false)
+    expect(isMachineId('My notes')).toBe(false)
+  })
+
+  it('derives a friendly title: human → first message → date → fallback', () => {
+    expect(deriveSessionTitle({ title: 'renamed-e2e' })).toBe('renamed-e2e')
+    expect(
+      deriveSessionTitle({ title: 'api_1783148667_43246421', firstUserText: 'Hello there\nmore' }),
+    ).toBe('Hello there')
+    expect(
+      deriveSessionTitle({
+        title: 'api_1783148667_43246421',
+        startedAt: Date.parse('2026-07-04T13:22:00') / 1000,
+      }),
+    ).toMatch(/^Chat · \d{2}\/\d{2} \d{2}:\d{2}$/)
+    expect(deriveSessionTitle({})).toBe('New chat')
   })
 })

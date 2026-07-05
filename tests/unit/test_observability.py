@@ -136,6 +136,9 @@ class TestDistributionsAndRows:
         rows = obs.ranking(per_agent, now_s=NOW)
         assert [r["agent"] for r in rows] == ["high", "low", "down"]
         assert rows[2]["reachable"] is False
+        # per-type token breakdown is exposed for the stacked ranking bar
+        assert rows[0]["tokens"] == rows[0]["input_tokens"] + rows[0]["output_tokens"]
+        assert "cache_read_tokens" in rows[0]
 
 
 def make_registry(*names: str) -> Registry:

@@ -69,3 +69,73 @@ export function shortDateTime(epochS: number | null): string {
   const md = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
   return `${md} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+
+/** Values below ~1e11 are epoch SECONDS; at/above are already milliseconds. */
+function normalizeMs(n: number): number {
+  return Math.abs(n) < 1e11 ? n * 1000 : n
+}
+
+/** Parse ISO string | epoch-seconds string (maybe fractional) | epoch-ms |
+ *  number → epoch **milliseconds**, or null. */
+export function toEpochMs(input: string | number | null | undefined): number | null {
+  if (input == null) return null
+  if (typeof input === 'number') return Number.isFinite(input) ? normalizeMs(input) : null
+  const s = input.trim()
+  if (s === '') return null
+  if (/^-?\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s)
+    return Number.isFinite(n) ? normalizeMs(n) : null
+  }
+  const parsed = Date.parse(s)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+/** Humanized relative time from any timestamp shape. '' when absent/unparseable.
+ *  Fixes the ChatView bug where fractional epoch strings printed raw. */
+export function timeAgo(input: string | number | null | undefined, now = Date.now()): string {
+  const ms = toEpochMs(input)
+  if (ms == null) return ''
+  const s = Math.max(0, Math.floor((now - ms) / 1000))
+  if (s < 45) return 'just now'
+  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m ago`
+  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 2_592_000) return `${Math.floor(s / 86_400)}d ago`
+  return shortDateTime(ms / 1000)
+}
+
+/** UI cost readout: 0 / null / NaN collapse to an em-dash so free/local
+ *  upstreams don't spam "$0.0000". Non-zero delegates to formatUsd.
+ *  (Observability deliberately keeps formatUsd → "$0".) */
+export function formatCost(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value === 0) return '—'
+  return formatUsd(value)
+}
+
+/** Opaque server ids: "api_1783148667_43246421", "1783148691.5026166", … */
+const MACHINE_ID = /^(?:[a-z]+[-_])?\d{6,}(?:[-_.]\w+)*$/i
+export function isMachineId(s: string): boolean {
+  return MACHINE_ID.test(s.trim())
+}
+
+/** Friendly session label: human title → first user message → date → fallback. */
+export function deriveSessionTitle(input: {
+  title?: string | null
+  firstUserText?: string | null
+  startedAt?: string | number | null
+}): string {
+  const title = input.title?.trim()
+  if (title && !isMachineId(title)) return title
+  const first = input.firstUserText?.trim()
+  if (first) return truncate(firstLine(first), 48)
+  const ms = toEpochMs(input.startedAt)
+  if (ms != null) return `Chat · ${shortDateTime(ms / 1000)}`
+  return 'New chat'
+}
+
+function firstLine(s: string): string {
+  const nl = s.indexOf('\n')
+  return (nl === -1 ? s : s.slice(0, nl)).trim()
+}
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`
+}

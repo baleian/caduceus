@@ -1,3 +1,4 @@
+import { clsx } from 'clsx'
 import { Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -5,6 +6,7 @@ export function SearchInput(props: {
   value: string
   onChange: (value: string) => void
   placeholder?: string
+  className?: string
   testId?: string
 }): ReactNode {
   return (
@@ -17,7 +19,10 @@ export function SearchInput(props: {
       <input
         data-testid={props.testId}
         type="search"
-        className="w-56 rounded-lg border border-edge bg-panel py-1.5 pr-3 pl-8 text-sm placeholder:text-ink-faint focus:border-accent focus:outline-none"
+        className={clsx(
+          'w-full rounded-lg border border-edge bg-panel py-1.5 pr-3 pl-8 text-sm placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 sm:w-64',
+          props.className,
+        )}
         placeholder={props.placeholder ?? 'Search…'}
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}

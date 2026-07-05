@@ -196,6 +196,9 @@ def ranking(per_agent: list[AgentSessions], *, now_s: float) -> list[dict[str, A
                 "sessions": kpis["sessions"],
                 "active_sessions": kpis["active_sessions"],
                 "tokens": kpis["input_tokens"] + kpis["output_tokens"],
+                "input_tokens": kpis["input_tokens"],
+                "output_tokens": kpis["output_tokens"],
+                "cache_read_tokens": kpis["cache_read_tokens"],
                 "cost_usd": kpis["cost_usd"],
                 "tool_calls": kpis["tool_calls"],
             }

@@ -48,6 +48,7 @@ import type { TrafficBucket } from '../../lib/timeseries'
 import type {
   ObservabilityGateway,
   ObservabilityUsage,
+  RankingRow,
   UsageBucket,
   UsageKpis,
   UsageRange,
@@ -108,6 +109,7 @@ export function ObservabilityPage(): ReactNode {
   // immediate refetch on scope/range change; polling keeps it fresh after.
   useEffect(() => {
     setSessionId(null)
+    setUsage(null) // don't show the previous scope's totals until the refetch lands
     void fetchUsage()
     void fetchGw()
   }, [fetchUsage, fetchGw])
@@ -417,20 +419,30 @@ function KpiTile(props: {
 
 type RankMeasure = 'requests' | 'cost_usd' | 'tokens'
 
+const tokenSum = (r: RankingRow): number =>
+  (r.input_tokens ?? 0) + (r.cache_read_tokens ?? 0) + (r.output_tokens ?? 0)
+
 function FleetPanels(props: {
   usage: ObservabilityUsage
   onOpenAgent: (name: string) => void
 }): ReactNode {
   const [measure, setMeasure] = useState<RankMeasure>('requests')
   const ranking = props.usage.fleet.ranking
+  const isTokens = measure === 'tokens'
   const fmt = measure === 'cost_usd' ? formatUsd : formatCount
-  const max = Math.max(...ranking.map((r) => r[measure]), 1)
+  const max = isTokens
+    ? Math.max(...ranking.map(tokenSum), 1)
+    : Math.max(...ranking.map((r) => r[measure]), 1)
   return (
     <div className="grid gap-5 xl:grid-cols-2">
       <Card testId="obs-ranking-card">
         <CardHeader
           title="Agents"
-          subtitle="ranked comparison — click an agent to narrow"
+          subtitle={
+            isTokens
+              ? 'token usage by type — click an agent to narrow'
+              : 'ranked comparison — click an agent to narrow'
+          }
           actions={
             <div className="flex overflow-hidden rounded-lg border border-edge">
               {(
@@ -454,37 +466,88 @@ function FleetPanels(props: {
           }
         />
         <ul className="space-y-1.5">
-          {ranking.map((row) => (
-            <li key={row.agent}>
-              <button
-                data-testid={`obs-rank-${row.agent}`}
-                onClick={() => props.onOpenAgent(row.agent)}
-                className="group flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-panel-2"
-                title={`open ${row.agent}`}
-              >
-                <span className="w-28 truncate text-sm text-ink">{row.agent}</span>
-                <span className="relative h-2 flex-1 overflow-hidden rounded-full bg-panel-2">
-                  <span
-                    className={`absolute inset-y-0 left-0 rounded-full ${row.reachable ? 'bg-[var(--color-viz-1)]' : 'bg-[var(--color-viz-1)]/35'}`}
-                    style={{ width: `${Math.max(2, (row[measure] / max) * 100)}%` }}
-                  />
-                </span>
-                <span className="w-16 text-right text-xs tabular-nums text-ink-dim">
-                  {fmt(row[measure])}
-                </span>
-                {!row.reachable && (
-                  <span className="rounded-full bg-warn/15 px-1.5 py-0.5 text-[9px] text-warn">
-                    unreachable
+          {ranking.map((row) => {
+            const total = isTokens ? tokenSum(row) : row[measure]
+            return (
+              <li key={row.agent}>
+                <button
+                  data-testid={`obs-rank-${row.agent}`}
+                  onClick={() => props.onOpenAgent(row.agent)}
+                  className="group flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-panel-2"
+                  title={`open ${row.agent}`}
+                >
+                  <span className="w-28 truncate text-sm text-ink">{row.agent}</span>
+                  <span className="relative h-2.5 flex-1 overflow-hidden rounded-full bg-panel-2">
+                    {isTokens ? (
+                      <span
+                        className="absolute inset-y-0 left-0 flex overflow-hidden rounded-full"
+                        style={{
+                          width: `${Math.max(2, (total / max) * 100)}%`,
+                          opacity: row.reachable ? 1 : 0.35,
+                        }}
+                      >
+                        <TokenSeg value={row.input_tokens} total={total} color="var(--color-viz-1)" />
+                        <TokenSeg
+                          value={row.cache_read_tokens}
+                          total={total}
+                          color="var(--color-viz-2)"
+                        />
+                        <TokenSeg
+                          value={row.output_tokens}
+                          total={total}
+                          color="var(--color-viz-3)"
+                        />
+                      </span>
+                    ) : (
+                      <span
+                        className={`absolute inset-y-0 left-0 rounded-full ${row.reachable ? 'bg-[var(--color-viz-1)]' : 'bg-[var(--color-viz-1)]/35'}`}
+                        style={{ width: `${Math.max(2, (total / max) * 100)}%` }}
+                      />
+                    )}
                   </span>
-                )}
-              </button>
-            </li>
-          ))}
+                  <span className="w-16 text-right text-xs tabular-nums text-ink-dim">
+                    {isTokens ? formatCount(total) : fmt(row[measure])}
+                  </span>
+                  {!row.reachable && (
+                    <span className="rounded-full bg-warn/15 px-1.5 py-0.5 text-[9px] text-warn">
+                      unreachable
+                    </span>
+                  )}
+                </button>
+              </li>
+            )
+          })}
           {ranking.length === 0 && <p className="px-2 py-3 text-xs text-ink-faint">no agents</p>}
         </ul>
+        {isTokens && ranking.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-edge pt-2 text-[11px] text-ink-dim">
+            <LegendDot color="var(--color-viz-1)" label="input" />
+            <LegendDot color="var(--color-viz-2)" label="cache read" />
+            <LegendDot color="var(--color-viz-3)" label="output" />
+          </div>
+        )}
       </Card>
       <DistributionCard scope={props.usage.fleet} />
     </div>
+  )
+}
+
+function TokenSeg(props: { value: number; total: number; color: string }): ReactNode {
+  if (!(props.total > 0) || !(props.value > 0)) return null
+  return (
+    <span
+      className="h-full"
+      style={{ width: `${(props.value / props.total) * 100}%`, backgroundColor: props.color }}
+    />
+  )
+}
+
+function LegendDot(props: { color: string; label: string }): ReactNode {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="h-2 w-2 rounded-[2px]" style={{ backgroundColor: props.color }} />
+      {props.label}
+    </span>
   )
 }
 

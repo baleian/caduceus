@@ -1,9 +1,18 @@
-/** Agent detail (redesign §6.3): hero header (name + live badges + action
- * group) over tabbed content. 202-accepted semantics preserved: buttons only
- * acknowledge the request; the transition arrives via WS, with a 30s REST
+/** Agent detail (redesign §6.3): hero header (name + live badges + a state-aware
+ * action group) over tabbed content. 202-accepted semantics preserved: buttons
+ * only acknowledge the request; the transition arrives via WS, with a 30s REST
  * fallback refetch (S-U4-2). */
 
-import { ArrowLeft, ExternalLink, MessageSquare, Play, Square, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  ExternalLink,
+  MessageSquare,
+  MoreVertical,
+  Play,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
@@ -14,6 +23,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardHeader } from '../../components/ui/Card'
 import { Skeleton } from '../../components/ui/Skeleton'
+import { timeAgo } from '../../lib/format'
 import type { AgentRecord, AgentStatus } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
 import { LogsTab } from './LogsTab'
@@ -97,6 +107,9 @@ export function AgentDetailPage(): ReactNode {
     )
   }
 
+  const process = live?.process ?? status?.process
+  const running = process === 'running'
+
   return (
     <div>
       <Link
@@ -107,7 +120,7 @@ export function AgentDetailPage(): ReactNode {
       </Link>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight" data-testid="agent-detail-title">
+        <h1 className="text-xl font-semibold tracking-tight" data-testid="agent-detail-title">
           {name}
         </h1>
         {status && (
@@ -121,38 +134,32 @@ export function AgentDetailPage(): ReactNode {
         )}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            testId="agent-detail-start-button"
-            disabled={busy !== null}
-            onClick={() => void lifecycle('start')}
-          >
-            <Play size={13} aria-hidden /> {busy === 'start' ? 'Starting…' : 'Start'}
-          </Button>
-          <Button
-            variant="outline"
-            testId="agent-detail-stop-button"
-            disabled={busy !== null}
-            onClick={() => void lifecycle('stop')}
-          >
-            <Square size={13} aria-hidden /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
-          </Button>
+          {running ? (
+            <Button
+              variant="outline"
+              testId="agent-detail-stop-button"
+              busy={busy === 'stop'}
+              disabled={busy !== null}
+              onClick={() => void lifecycle('stop')}
+            >
+              <Square size={13} aria-hidden /> Stop
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              testId="agent-detail-start-button"
+              busy={busy === 'start'}
+              disabled={busy !== null}
+              onClick={() => void lifecycle('start')}
+            >
+              <Play size={13} aria-hidden /> Start
+            </Button>
+          )}
           <Link data-testid="agent-detail-chat-link" to={`/chat/${encodeURIComponent(name)}`}>
-            <Button variant="outline">
+            <Button variant={running ? 'primary' : 'outline'}>
               <MessageSquare size={13} aria-hidden /> Chat
             </Button>
           </Link>
-          <a
-            data-testid="agent-detail-dashboard-link"
-            href="http://127.0.0.1:9119"
-            target="_blank"
-            rel="noreferrer"
-            title="hermes native dashboard (start it with `hermes dashboard`)"
-          >
-            <Button variant="ghost">
-              hermes <ExternalLink size={12} aria-hidden />
-            </Button>
-          </a>
           <Button
             variant="dangerGhost"
             testId="agent-detail-remove-button"
@@ -160,6 +167,27 @@ export function AgentDetailPage(): ReactNode {
           >
             <Trash2 size={13} aria-hidden /> Remove
           </Button>
+          <details className="group relative [&_summary::-webkit-details-marker]:hidden">
+            <summary
+              aria-label="More actions"
+              title="More actions"
+              className="flex cursor-pointer list-none items-center rounded-lg border border-edge-strong px-2 py-2 text-ink-dim hover:bg-panel-2"
+            >
+              <MoreVertical size={16} aria-hidden />
+            </summary>
+            <div className="absolute right-0 z-10 mt-1 w-56 rounded-lg border border-edge bg-panel p-1 shadow-xl">
+              <a
+                data-testid="agent-detail-dashboard-link"
+                href="http://127.0.0.1:9119"
+                target="_blank"
+                rel="noreferrer"
+                title="hermes native dashboard (start it with `hermes dashboard`)"
+                className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink"
+              >
+                <ExternalLink size={13} aria-hidden /> hermes dashboard
+              </a>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -192,38 +220,14 @@ export function AgentDetailPage(): ReactNode {
       )}
 
       {tab === 'overview' && !(record && status) && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Skeleton className="h-40" />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Skeleton className="h-40 lg:col-span-2" />
           <Skeleton className="h-40" />
         </div>
       )}
 
       {tab === 'overview' && record && status && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader title="Runtime" />
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-              <Info label="image" value={record.spec.docker_image} wide />
-              <Info label="network" value={record.spec.network_mode} />
-              <Info label="private URLs" value={record.spec.allow_private_urls ? 'allowed' : 'blocked'} />
-              <Info label="approvals" value={record.spec.approvals_mode} />
-              <Info label="cpu" value={record.spec.cpu === null ? '—' : String(record.spec.cpu)} />
-              <Info
-                label="memory"
-                value={record.spec.memory_mb === null ? '—' : `${record.spec.memory_mb} MB`}
-              />
-            </dl>
-          </Card>
-          <Card>
-            <CardHeader title="Placement" />
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-              <Info label="api_server port" value={String(record.api_port)} />
-              <Info label="profile" value={record.profile_name} />
-              <Info label="workspace" value={record.workspace_dir} wide />
-              <Info label="created" value={record.created_at} wide />
-            </dl>
-          </Card>
-        </div>
+        <OverviewTab name={name} record={record} />
       )}
 
       {tab === 'logs' && <LogsTab agent={name} />}
@@ -250,9 +254,65 @@ export function AgentDetailPage(): ReactNode {
   )
 }
 
+function OverviewTab(props: { name: string; record: AgentRecord }): ReactNode {
+  const { record } = props
+  const { state } = useApp()
+  const recent = state.live.recentRequests.filter((r) => r.agent === props.name)
+  const last = recent[recent.length - 1]
+  return (
+    <div className="grid gap-4 lg:grid-cols-3">
+      <Card className="lg:col-span-2">
+        <CardHeader title="Configuration" />
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm lg:grid-cols-3">
+          <Info label="image" value={record.spec.docker_image} wide />
+          <Info label="network" value={record.spec.network_mode} />
+          <Info label="private URLs" value={record.spec.allow_private_urls ? 'allowed' : 'blocked'} />
+          <Info label="approvals" value={record.spec.approvals_mode} />
+          <Info label="cpu" value={record.spec.cpu === null ? '—' : String(record.spec.cpu)} />
+          <Info
+            label="memory"
+            value={record.spec.memory_mb === null ? '—' : `${record.spec.memory_mb} MB`}
+          />
+          <Info label="api_server port" value={String(record.api_port)} />
+          <Info label="profile" value={record.profile_name} />
+          <Info label="created" value={record.created_at} />
+          <Info label="workspace" value={record.workspace_dir} wide />
+        </dl>
+      </Card>
+      <Card>
+        <CardHeader
+          title="Activity"
+          subtitle="proxied via this page"
+          actions={
+            <Link
+              to={`/observability/${encodeURIComponent(props.name)}`}
+              className="inline-flex items-center gap-0.5 text-xs font-medium text-accent hover:underline"
+            >
+              details <ArrowUpRight size={12} aria-hidden />
+            </Link>
+          }
+        />
+        <dl className="space-y-3 text-sm">
+          <div className="flex items-baseline justify-between">
+            <dt className="text-ink-dim">requests</dt>
+            <dd className="text-2xl font-semibold tabular-nums">{recent.length}</dd>
+          </div>
+          <div className="flex items-center justify-between">
+            <dt className="text-ink-dim">last request</dt>
+            <dd className="text-xs text-ink-faint">{last ? timeAgo(last.ts) : '—'}</dd>
+          </div>
+        </dl>
+        <p className="mt-3 border-t border-edge pt-2.5 text-xs text-ink-faint">
+          full history & token usage on Observability →
+        </p>
+      </Card>
+    </div>
+  )
+}
+
 function Info(props: { label: string; value: string; wide?: boolean }): ReactNode {
   return (
-    <div className={props.wide ? 'col-span-2' : ''}>
+    <div className={props.wide ? 'col-span-2 lg:col-span-3' : ''}>
       <dt className="text-xs tracking-wide text-ink-faint uppercase">{props.label}</dt>
       <dd className="mt-0.5 font-mono text-xs break-all text-ink">{props.value}</dd>
     </div>

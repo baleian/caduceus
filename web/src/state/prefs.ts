@@ -8,11 +8,18 @@ export interface UiPrefs {
   theme: ThemePref
   thinkingOpen: boolean
   sidebarCollapsed: boolean
+  /** Last agent opened in Chat — lets /chat resume the last conversation. */
+  lastChatAgent: string | null
 }
 
 const PREFS_KEY = 'caduceus.prefs'
 
-export const defaultPrefs: UiPrefs = { theme: 'dark', thinkingOpen: false, sidebarCollapsed: false }
+export const defaultPrefs: UiPrefs = {
+  theme: 'dark',
+  thinkingOpen: false,
+  sidebarCollapsed: false,
+  lastChatAgent: null,
+}
 
 export function loadPrefs(): UiPrefs {
   try {
@@ -26,6 +33,7 @@ export function loadPrefs(): UiPrefs {
           : 'dark',
       thinkingOpen: parsed.thinkingOpen === true,
       sidebarCollapsed: parsed.sidebarCollapsed === true,
+      lastChatAgent: typeof parsed.lastChatAgent === 'string' ? parsed.lastChatAgent : null,
     }
   } catch {
     return defaultPrefs

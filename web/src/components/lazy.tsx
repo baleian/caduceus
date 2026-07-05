@@ -4,10 +4,7 @@
 
 import { lazy, Suspense, type ComponentProps, type ReactNode } from 'react'
 
-import type {
-  TrafficChart as EagerTrafficChart,
-  UsageBarChart as EagerUsageBarChart,
-} from './charts'
+import type { TrafficChart as EagerTrafficChart } from './charts'
 import type { Markdown as EagerMarkdown } from './Markdown'
 import type {
   ActivityChart as EagerActivityChart,
@@ -20,9 +17,6 @@ import type {
 import { Skeleton } from './ui/Skeleton'
 
 const TrafficChartInner = lazy(() => import('./charts').then((m) => ({ default: m.TrafficChart })))
-const UsageBarChartInner = lazy(() =>
-  import('./charts').then((m) => ({ default: m.UsageBarChart })),
-)
 const MarkdownInner = lazy(() => import('./Markdown').then((m) => ({ default: m.Markdown })))
 const ActivityChartInner = lazy(() =>
   import('./obsCharts').then((m) => ({ default: m.ActivityChart })),
@@ -43,14 +37,6 @@ export function TrafficChart(props: ComponentProps<typeof EagerTrafficChart>): R
   return (
     <Suspense fallback={<Skeleton className="h-[220px]" />}>
       <TrafficChartInner {...props} />
-    </Suspense>
-  )
-}
-
-export function UsageBarChart(props: ComponentProps<typeof EagerUsageBarChart>): ReactNode {
-  return (
-    <Suspense fallback={<Skeleton className="h-[160px]" />}>
-      <UsageBarChartInner {...props} />
     </Suspense>
   )
 }

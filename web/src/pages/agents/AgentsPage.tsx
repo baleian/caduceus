@@ -1,8 +1,9 @@
-/** Agents (S-U4-1, redesign §6.2 Q3=B): searchable card grid with live badges
- * from the reducer overlay and per-card quick actions; the create form moved
- * into a right-hand Drawer (P5) keeping the same validation and testids. */
+/** Agents (S-U4-1, redesign §6.2 Q3=B): searchable card grid — denser, labeled
+ * cards with live badges from the reducer overlay and state-aware quick actions;
+ * the create form lives in a right-hand Drawer (P5) keeping the same validation
+ * and testids. */
 
-import { Box, Container, Cpu, MessageSquare, Play, Plus, Square } from 'lucide-react'
+import { Box, MessageSquare, Play, Plus, Square, TriangleAlert } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -50,9 +51,15 @@ export function AgentsPage(): ReactNode {
       <PageHeader
         title="Agents"
         description="managed hermes agents behind the gateway"
+        divider
         actions={
           <>
-            <SearchInput value={query} onChange={setQuery} placeholder="Filter by name…" />
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Filter by name…"
+              className="sm:w-72"
+            />
             <Button
               variant="gradient"
               testId="agents-create-toggle-button"
@@ -83,12 +90,12 @@ export function AgentsPage(): ReactNode {
             />
           </div>
         ) : visible.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-edge-strong p-6 text-center text-sm text-ink-dim">
+          <p className="rounded-lg border border-dashed border-edge-strong p-5 text-center text-sm text-ink-dim">
             no agents match “{query}”
           </p>
         ) : (
           <div
-            className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
             data-testid="agents-table"
           >
             {visible.map((agent) => (
@@ -115,6 +122,7 @@ function AgentCard(props: { agent: AgentStatus }): ReactNode {
   const live = state.live.agents[agent.name]
   const process = live?.process ?? agent.process
   const running = process === 'running'
+  const drifting = agent.desired_state !== process
 
   // live overlay clears busy once the transition lands (WPT-7: no optimism)
   useEffect(() => {
@@ -132,12 +140,14 @@ function AgentCard(props: { agent: AgentStatus }): ReactNode {
     }
   }
 
+  const chatTo = `/chat/${encodeURIComponent(agent.name)}`
+
   return (
-    <Card className="flex flex-col gap-3">
+    <Card compact className="flex flex-col gap-2.5">
       <div className="flex items-start justify-between gap-2">
         <Link
           data-testid={`agents-row-${agent.name}-link`}
-          className="min-w-0 truncate text-base font-semibold hover:text-accent"
+          className="min-w-0 truncate font-semibold hover:text-accent"
           to={`/agents/${encodeURIComponent(agent.name)}`}
         >
           {agent.name}
@@ -145,43 +155,55 @@ function AgentCard(props: { agent: AgentStatus }): ReactNode {
         <StatusBadge value={process} testId={`agents-row-${agent.name}-process-badge`} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-dim">
-        <span className="inline-flex items-center gap-1">
-          <Cpu size={12} aria-hidden /> {agent.health}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <Container size={12} aria-hidden /> {agent.container}
-        </span>
-        <span className="text-ink-faint">desired: {agent.desired_state}</span>
-      </div>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-2xs">
+        <Meta label="health" value={agent.health} />
+        <Meta label="container" value={agent.container} />
+      </dl>
 
-      <div className="mt-auto flex items-center gap-2 border-t border-edge pt-3">
+      {drifting && (
+        <span className="inline-flex w-fit items-center gap-1 rounded-md bg-warn/10 px-1.5 py-0.5 text-[11px] font-medium text-warn">
+          <TriangleAlert size={11} aria-hidden /> desired: {agent.desired_state}
+        </span>
+      )}
+
+      <div className="mt-auto flex items-center gap-2 border-t border-edge pt-2.5">
         {running ? (
           <Button
             variant="outline"
             size="xs"
+            busy={busy === 'stop'}
             disabled={busy !== null}
             onClick={() => void lifecycle('stop')}
           >
-            <Square size={12} aria-hidden /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
+            <Square size={12} aria-hidden /> Stop
           </Button>
         ) : (
           <Button
             variant="primary"
             size="xs"
+            busy={busy === 'start'}
             disabled={busy !== null}
             onClick={() => void lifecycle('start')}
           >
-            <Play size={12} aria-hidden /> {busy === 'start' ? 'Starting…' : 'Start'}
+            <Play size={12} aria-hidden /> Start
           </Button>
         )}
-        <Link to={`/chat/${encodeURIComponent(agent.name)}`}>
-          <Button variant="ghost" size="xs">
+        <Link to={chatTo} className="ml-auto">
+          <Button variant={running ? 'primary' : 'outline'} size="xs">
             <MessageSquare size={12} aria-hidden /> Chat
           </Button>
         </Link>
       </div>
     </Card>
+  )
+}
+
+function Meta(props: { label: string; value: string }): ReactNode {
+  return (
+    <div className="min-w-0">
+      <dt className="text-ink-faint uppercase">{props.label}</dt>
+      <dd className="mt-0.5 truncate text-ink-dim">{props.value}</dd>
+    </div>
   )
 }
 
@@ -274,6 +296,7 @@ function CreateAgentPanel(props: {
               <input
                 type="checkbox"
                 data-testid="agent-create-allow-private-urls-input"
+                className="accent-accent"
                 checked={values.allow_private_urls}
                 onChange={(e) => set('allow_private_urls', e.target.checked)}
               />
@@ -318,9 +341,9 @@ function CreateAgentPanel(props: {
           size="md"
           testId="agent-create-submit-button"
           type="submit"
-          disabled={submitting}
+          busy={submitting}
         >
-          {submitting ? 'Creating…' : 'Create agent'}
+          Create agent
         </Button>
       </div>
     </form>

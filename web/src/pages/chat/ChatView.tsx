@@ -12,8 +12,11 @@
 import {
   ArrowDown,
   ArrowUp,
+  ArrowUpRight,
+  Bot,
   Check,
   ChevronRight,
+  ChevronsUpDown,
   Cog,
   Loader2,
   Pencil,
@@ -69,6 +72,7 @@ import {
   type LiveToolCall,
   type LiveTurn,
 } from '../../lib/liveTurn'
+import { deriveSessionTitle, formatCost, timeAgo } from '../../lib/format'
 import { redact } from '../../lib/redact'
 import {
   argsSummary,
@@ -86,22 +90,13 @@ import {
 } from '../../lib/transcript'
 import type { SessionInfo } from '../../lib/types'
 import { useApp } from '../../state/AppStore'
-import { loadPrefs } from '../../state/prefs'
+import { loadPrefs, savePrefs } from '../../state/prefs'
 
 const DELTA_LIMIT = 1_000_000
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
 
-function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
+// timeAgo now lives in lib/format (parses fractional epoch — the raw-id bug fix)
 
 /** FR-4: grow the composer with its content up to ~8 lines (matches the
  * `max-h-52` cap = 208px), after which it scrolls internally. */
@@ -208,8 +203,13 @@ export function ChatView(): ReactNode {
   )
 
   useEffect(() => {
-    void refetchAgents() // meta rail needs the agent's live status
+    void refetchAgents() // the switcher + header need the agent's live status
   }, [refetchAgents])
+
+  // resume this conversation next time /chat is opened cold
+  useEffect(() => {
+    if (agent) savePrefs({ ...loadPrefs(), lastChatAgent: agent })
+  }, [agent])
 
   useEffect(() => {
     let cancelled = false
@@ -506,9 +506,10 @@ export function ChatView(): ReactNode {
     <div className="flex h-full" data-testid="chat-view">
       {/* ── sessions pane ─────────────────────────────────────────────── */}
       <aside className="flex w-72 shrink-0 flex-col border-r border-edge bg-panel">
+        <AgentSwitcher current={agent} />
         <div className="border-b border-edge p-3">
           <Button
-            variant="gradient"
+            variant="outline"
             testId="chat-new-session-button"
             className="w-full"
             onClick={() => void newSession()}
@@ -527,7 +528,7 @@ export function ChatView(): ReactNode {
                 }`}
               >
                 <span className="block truncate pr-10 font-medium">
-                  {session.title || session.id}
+                  {deriveSessionTitle({ title: session.title, startedAt: session.started_at })}
                 </span>
                 <span className="block truncate text-xs text-ink-faint">
                   {timeAgo(session.last_active ?? session.started_at)}
@@ -554,26 +555,36 @@ export function ChatView(): ReactNode {
             </li>
           ))}
         </ul>
+        <SessionUsagePanel session={activeSession} agent={agent} />
       </aside>
 
       {/* ── conversation ──────────────────────────────────────────────── */}
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-3 border-b border-edge bg-panel px-6 py-3">
-          <div className="min-w-0 text-sm text-ink-dim">
-            chat with{' '}
-            <Link
-              to={`/agents/${encodeURIComponent(agent)}`}
-              className="font-semibold text-ink hover:text-accent"
-            >
-              {agent}
-            </Link>
-            {activeId && (
-              <span className="ml-2 hidden font-mono text-xs text-ink-faint md:inline">
-                session {activeId}
-              </span>
-            )}
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-ink">
+              {activeSession
+                ? deriveSessionTitle({
+                    title: activeSession.title,
+                    startedAt: activeSession.started_at,
+                  })
+                : 'New conversation'}
+            </p>
+            <p className="truncate text-xs text-ink-dim">
+              chat with{' '}
+              <Link
+                to={`/agents/${encodeURIComponent(agent)}`}
+                className="font-medium text-ink hover:text-accent"
+              >
+                {agent}
+              </Link>
+              {activeSession?.last_active ? <> · {timeAgo(activeSession.last_active)}</> : null}
+            </p>
           </div>
-          <SessionUsage session={activeSession} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <StatusBadge value={agentLive?.process ?? agentListed?.process ?? 'unknown'} />
+            <StatusBadge value={agentLive?.health ?? agentListed?.health ?? 'unknown'} />
+          </div>
         </header>
 
         <div className="relative min-h-0 flex-1">
@@ -712,45 +723,6 @@ export function ChatView(): ReactNode {
         </footer>
       </section>
 
-      {/* ── meta rail (xl+) ───────────────────────────────────────────── */}
-      <aside className="hidden w-64 shrink-0 space-y-5 overflow-y-auto border-l border-edge bg-panel p-4 2xl:block">
-        <div>
-          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">Agent</h3>
-          <div className="flex flex-wrap gap-1.5">
-            <StatusBadge value={agentLive?.process ?? agentListed?.process ?? 'unknown'} />
-            <StatusBadge value={agentLive?.health ?? agentListed?.health ?? 'unknown'} />
-          </div>
-        </div>
-        <div>
-          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">
-            Session usage
-          </h3>
-          {activeSession ? (
-            <dl className="space-y-1.5 text-sm">
-              <UsageRowItem label="input" value={activeSession.input_tokens} />
-              <UsageRowItem label="cache read" value={activeSession.cache_read_tokens} />
-              <UsageRowItem label="output" value={activeSession.output_tokens} />
-              {activeSession.estimated_cost_usd != null && activeSession.estimated_cost_usd > 0 && (
-                <div className="flex justify-between border-t border-edge pt-1.5">
-                  <dt className="text-ink-dim">est. cost</dt>
-                  <dd className="font-mono text-xs">
-                    ${activeSession.estimated_cost_usd.toFixed(4)}
-                  </dd>
-                </div>
-              )}
-            </dl>
-          ) : (
-            <p className="text-xs text-ink-faint">no active session</p>
-          )}
-        </div>
-        <div>
-          <h3 className="mb-2 text-xs font-medium tracking-wide text-ink-faint uppercase">
-            Sessions
-          </h3>
-          <p className="text-sm text-ink-dim">{sessions.length} total</p>
-        </div>
-      </aside>
-
       <ConfirmModal
         open={deleteTarget !== null}
         title="Delete session"
@@ -792,37 +764,85 @@ export function ChatView(): ReactNode {
   )
 }
 
-function UsageRowItem(props: { label: string; value: number | null | undefined }): ReactNode {
+/** Agent switcher in the conversation's left rail — replaces the old blocking
+ * /chat picker page. Native <details> popover; each row links to that agent's
+ * conversation (keeps chat-agent-<name>-link). */
+function AgentSwitcher(props: { current: string }): ReactNode {
+  const { state } = useApp()
+  const live = state.live.agents
   return (
-    <div className="flex justify-between">
-      <dt className="text-ink-dim">{props.label}</dt>
-      <dd className="font-mono text-xs tabular-nums">{fmt(props.value ?? 0)}</dd>
+    <details className="group border-b border-edge [&_summary::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-3 hover:bg-panel-2">
+        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-accent/12 text-accent">
+          <Bot size={15} aria-hidden />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold">{props.current}</span>
+        <ChevronsUpDown size={14} className="shrink-0 text-ink-faint" aria-hidden />
+      </summary>
+      <ul className="border-t border-edge p-1">
+        {state.agents.map((a) => (
+          <li key={a.name}>
+            <Link
+              data-testid={`chat-agent-${a.name}-link`}
+              to={`/chat/${encodeURIComponent(a.name)}`}
+              className={`flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-sm ${
+                a.name === props.current
+                  ? 'bg-accent/10 text-accent'
+                  : 'text-ink-dim hover:bg-panel-2 hover:text-ink'
+              }`}
+            >
+              <span className="min-w-0 truncate">{a.name}</span>
+              <StatusBadge value={live[a.name]?.process ?? a.process} />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+/** Session usage — the single, labeled placement (was duplicated in the header
+ * and the 2xl meta rail). Cost hides $0 via formatCost; deeplinks to the
+ * agent's Observability scope for full history. */
+function SessionUsagePanel(props: { session: SessionInfo | null; agent: string }): ReactNode {
+  const { session } = props
+  const has = session != null
+  return (
+    <div className="border-t border-edge p-3" data-testid="chat-session-usage">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-2xs font-medium tracking-wide text-ink-faint uppercase">
+          Session usage
+        </span>
+        <Link
+          to={`/observability/${encodeURIComponent(props.agent)}`}
+          className="inline-flex items-center gap-0.5 text-[11px] text-accent hover:underline"
+        >
+          details <ArrowUpRight size={11} aria-hidden />
+        </Link>
+      </div>
+      {has && session ? (
+        <dl className="space-y-1 text-xs">
+          <UsageStat label="input" value={session.input_tokens} />
+          <UsageStat label="cache read" value={session.cache_read_tokens} />
+          <UsageStat label="output" value={session.output_tokens} />
+          <div className="flex justify-between border-t border-edge pt-1">
+            <dt className="text-ink-dim">est. cost</dt>
+            <dd className="font-mono tabular-nums">{formatCost(session.estimated_cost_usd)}</dd>
+          </div>
+        </dl>
+      ) : (
+        <p className="text-xs text-ink-faint">no active session</p>
+      )}
     </div>
   )
 }
 
-/** Compact session-usage readout in the conversation header — hermes-native
- * cumulative counts (cache read split out). Updates whenever the session list
- * refreshes (i.e. after each turn). */
-function SessionUsage(props: { session: SessionInfo | null }): ReactNode {
-  const { session } = props
-  const input = session?.input_tokens ?? null
-  const output = session?.output_tokens ?? null
-  const cacheRead = session?.cache_read_tokens ?? 0
-  const cost = session?.estimated_cost_usd ?? null
-  if (input == null && output == null) {
-    return (
-      <span className="shrink-0 text-xs text-ink-faint" data-testid="chat-session-usage">
-        session usage —
-      </span>
-    )
-  }
+function UsageStat(props: { label: string; value: number | null | undefined }): ReactNode {
   return (
-    <span className="shrink-0 text-xs text-ink-dim" data-testid="chat-session-usage">
-      session · in {fmt(input ?? 0)}
-      {cacheRead > 0 && <> (cache {fmt(cacheRead)})</>} / out {fmt(output ?? 0)}
-      {cost != null && cost > 0 && <> · ${cost.toFixed(4)}</>}
-    </span>
+    <div className="flex justify-between">
+      <dt className="text-ink-dim">{props.label}</dt>
+      <dd className="font-mono tabular-nums">{fmt(props.value ?? 0)}</dd>
+    </div>
   )
 }
 

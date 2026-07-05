@@ -9,6 +9,7 @@ export function Drawer(props: {
   title: ReactNode
   onClose: () => void
   children: ReactNode
+  footer?: ReactNode
   testId?: string
 }): ReactNode {
   const titleId = useId()
@@ -50,6 +51,9 @@ export function Drawer(props: {
           </button>
         </header>
         <div className="flex-1 overflow-y-auto p-5">{props.children}</div>
+        {props.footer && (
+          <div className="flex justify-end gap-2 border-t border-edge px-5 py-3">{props.footer}</div>
+        )}
       </div>
     </div>
   )
