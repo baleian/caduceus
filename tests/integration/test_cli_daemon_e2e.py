@@ -36,7 +36,12 @@ HERMES_HOME = Path("/home/u/.hermes")
 
 
 def sse_bytes(*events: dict[str, Any]) -> bytes:
-    return b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events)
+    """NAMED-SSE frames (the ``event:`` line) — the sessions chat/stream
+    contract; the CLI reads the event name from the SSE frame, not the JSON."""
+    return b"".join(
+        f"event: {e.get('event', 'message')}\ndata: {json.dumps(e)}\n\n".encode()
+        for e in events
+    )
 
 
 def sse_response(payload: bytes) -> httpx.Response:
@@ -61,14 +66,15 @@ def agent_api_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(201, json={"session": {"id": "sess-1"}})
     if path.endswith("/messages"):
         return httpx.Response(200, json={"object": "list", "data": []})
-    if path == "/v1/runs" and method == "POST":
-        return httpx.Response(202, json={"run_id": "run-9", "status": "started"})
-    if path == "/v1/runs/run-9/events":
+    if path.endswith("/chat/stream") and method == "POST":
         return sse_response(
             sse_bytes(
-                {"event": "message.delta", "delta": "streamed "},
-                {"event": "message.delta", "delta": "pong"},
-                {"event": "run.completed", "output": "streamed pong", "usage": {}},
+                {"event": "run.started", "run_id": "run-9"},
+                {"event": "assistant.delta", "delta": "streamed "},
+                {"event": "assistant.delta", "delta": "pong"},
+                {"event": "assistant.completed", "content": "streamed pong"},
+                {"event": "run.completed", "usage": {}},
+                {"event": "done"},
             )
         )
     return httpx.Response(404, json={"error": {"message": f"nope {path}"}})
