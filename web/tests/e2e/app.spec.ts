@@ -213,6 +213,24 @@ test('chat: live reasoning surfaces as a thinking card (Q4=B)', async ({ page })
   })
 })
 
+test('chat: a failed turn POST surfaces a toast and restores the message (hydrate-outage fix)', async ({
+  page,
+}) => {
+  await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
+  const composer = page.getByTestId('chat-composer-input')
+  await expect(composer).toBeEnabled({ timeout: 10_000 })
+  // 'http500' makes the fake chat/stream POST return 500 while GET /messages
+  // still works (partial outage) — the finally hydrate would otherwise wipe the
+  // error note and the typed message
+  await composer.fill('http500 please')
+  await page.getByTestId('chat-send-button').click()
+
+  // the failure survives on a persistent channel (toast) ...
+  await expect(page.getByTestId('toast-area')).toBeVisible({ timeout: 10_000 })
+  // ... and the typed message is restored to the composer (not lost)
+  await expect(composer).toHaveValue('http500 please', { timeout: 10_000 })
+})
+
 test('chat: session rename and delete (Q5=B)', async ({ page }) => {
   await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
   await page.getByTestId('chat-new-session-button').click()

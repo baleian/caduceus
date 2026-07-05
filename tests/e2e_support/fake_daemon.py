@@ -88,6 +88,11 @@ class FakeAgentServer:
                     return httpx.Response(404, json={"error": "no such session"})
                 body = json.loads(request.content or b"{}")
                 message = str(body.get("message", body.get("input", "")))
+                if "http500" in message:
+                    # partial outage: the chat/stream POST fails (5xx) while the
+                    # session GET still works — exercises ChatView's catch
+                    # (toast + input restore) against the finally hydrate
+                    return httpx.Response(500, json={"error": {"message": "boom"}})
                 run_id = self._next("run")
                 self.runs[run_id] = {
                     "session_id": session_id,

@@ -346,11 +346,17 @@ export function ChatView(): ReactNode {
       // (run.started) and is what /v1/runs/{id}/approval|stop key on.
       await consumeStream(sessionId, text)
     } catch (error) {
-      pushNote(
+      const message =
         error instanceof ApiError
           ? `turn failed: ${error.message}`
-          : 'connection lost — the session is preserved',
-      )
+          : 'connection lost — the session is preserved'
+      pushNote(message)
+      // the finally re-hydrates from the server (W7), which wipes the live
+      // buffer — on a partial outage (POST failed but GET works) that erases the
+      // note above and the user's message. Surface the failure on a persistent
+      // channel (toast survives hydrate) and put the message back in the composer.
+      toast('error', message)
+      setInput(text)
     } finally {
       setMachine('idle')
       runIdRef.current = null
