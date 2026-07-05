@@ -93,18 +93,3 @@ export function transcriptFromMessages(raw: readonly SessionMessage[]): Transcri
   }
   return items
 }
-
-/** conversation_history for POST /v1/runs (U3 contract: runs API does not
- * hydrate history itself — only non-empty string user/assistant turns). */
-export function historyFromMessages(
-  raw: readonly SessionMessage[],
-): { role: string; content: string }[] {
-  const history: { role: string; content: string }[] = []
-  for (const message of raw) {
-    const { role, content } = message
-    if ((role === 'user' || role === 'assistant') && typeof content === 'string' && content) {
-      history.push({ role, content })
-    }
-  }
-  return history
-}

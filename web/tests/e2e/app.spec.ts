@@ -145,6 +145,74 @@ test('chat: approval card resolves the run (F6)', async ({ page }) => {
   })
 })
 
+test('chat: a mid-stream error event surfaces as a system note (resilience)', async ({
+  page,
+}) => {
+  await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
+  const composer = page.getByTestId('chat-composer-input')
+  await expect(composer).toBeEnabled({ timeout: 10_000 })
+  await composer.fill('boom now')
+  await page.getByTestId('chat-send-button').click()
+
+  await expect(page.getByTestId('chat-system-note').first()).toContainText('run failed', {
+    timeout: 10_000,
+  })
+  // stream ends → composer returns (recovers to idle)
+  await expect(page.getByTestId('chat-send-button')).toBeVisible({ timeout: 15_000 })
+})
+
+test('chat: a failed tool renders the live card in the failed state (tool.failed)', async ({
+  page,
+}) => {
+  await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
+  const composer = page.getByTestId('chat-composer-input')
+  await expect(composer).toBeEnabled({ timeout: 10_000 })
+  await composer.fill('toolfail now')
+  await page.getByTestId('chat-send-button').click()
+
+  await expect(
+    page.getByTestId('chat-live-turn').locator('[data-testid="chat-tool-call"][data-state="failed"]'),
+  ).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByTestId('chat-transcript')).toContainText('recovered from the failure', {
+    timeout: 15_000,
+  })
+})
+
+test('chat: denying an approval posts the final content (assistant.completed fallback)', async ({
+  page,
+}) => {
+  await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
+  const composer = page.getByTestId('chat-composer-input')
+  await expect(composer).toBeEnabled({ timeout: 10_000 })
+  await composer.fill('please approve this')
+  await page.getByTestId('chat-send-button').click()
+
+  await expect(page.getByTestId('chat-approval-card')).toBeVisible({ timeout: 10_000 })
+  await page.getByTestId('chat-approval-deny-button').click()
+  // 'tool denied' arrives only via assistant.completed (no assistant.delta) — the
+  // reply-fallback path
+  await expect(page.getByTestId('chat-transcript')).toContainText('tool denied', {
+    timeout: 15_000,
+  })
+})
+
+test('chat: live reasoning surfaces as a thinking card (Q4=B)', async ({ page }) => {
+  await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
+  const composer = page.getByTestId('chat-composer-input')
+  await expect(composer).toBeEnabled({ timeout: 10_000 })
+  await composer.fill('think about this')
+  await page.getByTestId('chat-send-button').click()
+
+  // reasoning streams live inside the live turn as a ∴ thinking card
+  await expect(
+    page.getByTestId('chat-live-turn').getByTestId('chat-thinking-toggle'),
+  ).toBeVisible({ timeout: 10_000 })
+  // the final reply still lands
+  await expect(page.getByTestId('chat-transcript')).toContainText('Thought it through.', {
+    timeout: 15_000,
+  })
+})
+
 test('chat: session rename and delete (Q5=B)', async ({ page }) => {
   await page.goto(`/chat/${AGENT}#token=${TOKEN}`)
   await page.getByTestId('chat-new-session-button').click()

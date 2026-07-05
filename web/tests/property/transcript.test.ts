@@ -5,7 +5,7 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 
-import { historyFromMessages, transcriptFromMessages } from '../../src/lib/transcript'
+import { transcriptFromMessages } from '../../src/lib/transcript'
 import type { SessionMessage } from '../../src/lib/types'
 
 const anyContent = fc.oneof(
@@ -175,22 +175,4 @@ describe('PU4-4 transcript mapping', () => {
     )
   })
 
-  it('history keeps exactly the non-empty string user/assistant turns, in order', () => {
-    fc.assert(
-      fc.property(fc.array(message, { maxLength: 30 }), (messages) => {
-        const expected = messages.filter(
-          (m) =>
-            (m.role === 'user' || m.role === 'assistant') &&
-            typeof m.content === 'string' &&
-            m.content !== '',
-        )
-        const history = historyFromMessages(messages)
-        expect(history).toHaveLength(expected.length)
-        history.forEach((h, i) => {
-          expect(h.role).toBe(expected[i]!.role)
-          expect(h.content).toBe(expected[i]!.content)
-        })
-      }),
-    )
-  })
 })

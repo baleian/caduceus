@@ -82,6 +82,28 @@ class FakeAgentServer:
             return httpx.Response(201, json={"session": {"id": session_id}})
         if path.startswith("/api/sessions/"):
             rest = path.removeprefix("/api/sessions/")
+            if rest.endswith("/chat/stream") and method == "POST":
+                session_id = rest.removesuffix("/chat/stream")
+                if session_id not in self.sessions:
+                    return httpx.Response(404, json={"error": "no such session"})
+                body = json.loads(request.content or b"{}")
+                message = str(body.get("message", body.get("input", "")))
+                run_id = self._next("run")
+                self.runs[run_id] = {
+                    "session_id": session_id,
+                    "input": message,
+                    "stopped": asyncio.Event(),
+                    "approval": asyncio.Queue(maxsize=1),
+                }
+                self.messages.setdefault(session_id, []).append(
+                    {"role": "user", "content": message}
+                )
+                self.sessions[session_id]["last_active"] = f"2026-07-03T01:00:{self.seq:02d}Z"
+                return httpx.Response(
+                    200,
+                    content=self._session_events(run_id),
+                    headers={"content-type": "text/event-stream"},
+                )
             if rest.endswith("/messages") and method == "GET":
                 session_id = rest.removesuffix("/messages")
                 return httpx.Response(200, json={"data": self.messages.get(session_id, [])})
@@ -191,6 +213,122 @@ class FakeAgentServer:
             await asyncio.sleep(0.05)
         finish(reply)
         yield frame({"event": "run.completed", "output": reply})
+
+    async def _session_events(self, run_id: str) -> AsyncIterator[bytes]:
+        """Named-SSE mirror of _events for POST /api/sessions/{id}/chat/stream:
+        run.started (carries run_id) → assistant.delta / tool.progress{_thinking}
+        / tool.* / approval.request → assistant.completed → run.completed → done.
+        Approval/stop reuse the same self.runs entry the /v1/runs endpoints key
+        on, so no new control routes are needed."""
+
+        def frame(name: str, payload: dict[str, Any]) -> bytes:
+            return f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode()
+
+        run = self.runs[run_id]
+        session_id: str = run["session_id"]
+        user_input: str = run["input"]
+
+        def finish(text: str, reasoning: str | None = None) -> None:
+            msg: dict[str, Any] = {"role": "assistant", "content": text}
+            if reasoning:
+                msg["reasoning"] = reasoning
+            self.messages.setdefault(session_id, []).append(msg)
+
+        async def close(text: str, *, interrupted: bool = False) -> AsyncIterator[bytes]:
+            yield frame(
+                "assistant.completed", {"content": text, "interrupted": interrupted}
+            )
+            yield frame("run.completed", {"usage": {}, "messages": []})
+            yield frame("done", {})
+
+        yield frame("run.started", {"run_id": run_id, "session_id": session_id})
+        yield frame(
+            "message.started", {"message": {"id": f"msg-{run_id}", "role": "assistant"}}
+        )
+
+        if "slow" in user_input:
+            emitted = ""
+            for i in range(40):
+                if run["stopped"].is_set():
+                    finish(emitted + " [stopped]")
+                    async for f in close(emitted + " [stopped]", interrupted=True):
+                        yield f
+                    return
+                chunk = f"tick{i} "
+                emitted += chunk
+                yield frame("assistant.delta", {"delta": chunk})
+                await asyncio.sleep(0.25)
+            finish(emitted)
+            async for f in close(emitted):
+                yield f
+            return
+
+        if "approve" in user_input:
+            yield frame(
+                "approval.request",
+                {
+                    "command": "touch /tmp/e2e",
+                    "choices": ["once", "session", "always", "deny"],
+                    "run_id": run_id,
+                },
+            )
+            try:
+                choice = await asyncio.wait_for(run["approval"].get(), timeout=20.0)
+            except TimeoutError:
+                choice = "deny"
+            if choice == "deny":
+                finish("tool denied")
+                async for f in close("tool denied"):
+                    yield f
+                return
+            yield frame("tool.started", {"tool_name": "terminal", "preview": "touch /tmp/e2e"})
+            yield frame("tool.completed", {"tool_name": "terminal"})
+            finish("tool ran fine")
+            yield frame("assistant.delta", {"delta": "tool ran fine"})
+            async for f in close("tool ran fine"):
+                yield f
+            return
+
+        if "think" in user_input:
+            for chunk in ("reason ", "about it"):
+                yield frame("tool.progress", {"tool_name": "_thinking", "delta": chunk})
+                await asyncio.sleep(0.05)
+            reply = "Thought it through."
+            for chunk in ("Thought ", "it ", "through."):
+                yield frame("assistant.delta", {"delta": chunk})
+                await asyncio.sleep(0.05)
+            finish(reply, reasoning="reason about it")
+            async for f in close(reply):
+                yield f
+            return
+
+        if "toolfail" in user_input:
+            yield frame("tool.started", {"tool_name": "terminal", "preview": "bad cmd"})
+            await asyncio.sleep(0.1)
+            yield frame("tool.failed", {"tool_name": "terminal"})
+            # hold so the live failed card is observable before the turn
+            # completes and re-hydration replaces the live buffer
+            await asyncio.sleep(0.5)
+            reply = "recovered from the failure"
+            yield frame("assistant.delta", {"delta": reply})
+            finish(reply)
+            async for f in close(reply):
+                yield f
+            return
+
+        if "boom" in user_input:
+            # mid-stream hermes error → error event then done (no content)
+            yield frame("error", {"message": "upstream 529 overloaded"})
+            yield frame("done", {})
+            return
+
+        reply = "Hello from fake agent."
+        for chunk in ("Hello ", "from ", "fake agent."):
+            yield frame("assistant.delta", {"delta": chunk})
+            await asyncio.sleep(0.05)
+        finish(reply)
+        async for f in close(reply):
+            yield f
 
 
 def make_daemon() -> Daemon:

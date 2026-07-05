@@ -65,19 +65,6 @@ export async function fetchMessages(
   )
 }
 
-export async function startRun(
-  client: ApiClient,
-  agent: string,
-  body: {
-    input: string
-    session_id: string
-    conversation_history: { role: string; content: string }[]
-  },
-): Promise<string> {
-  const started = await client.agentApi<{ run_id: string }>(agent, 'POST', 'v1/runs', body)
-  return String(started.run_id)
-}
-
 export function stopRun(client: ApiClient, agent: string, runId: string): Promise<unknown> {
   return client.agentApi(agent, 'POST', `v1/runs/${encodeURIComponent(runId)}/stop`)
 }
@@ -93,25 +80,32 @@ export function sendApproval(
   })
 }
 
-export interface RunStreamEvent {
-  /** payload.event — message.delta / reasoning.available / tool.* / … */
+export interface SessionStreamEvent {
+  /** the SSE `event:` name — run.started / assistant.delta / tool.* /
+   * approval.request / assistant.completed / run.completed / done / … */
   kind: string
   payload: Record<string, unknown>
 }
 
-/** Consume GET /v1/runs/{id}/events (data-only SSE; the event name lives
- * inside the JSON payload). Garbled frames are dropped (PU4-1 posture). */
-export async function streamRunEvents(
+/** Consume POST /api/sessions/{id}/chat/stream — a single call that opens the
+ * turn's SSE. Unlike the /v1/runs path this replays the session's native
+ * history server-side (tool results, tool_calls, reasoning, images), so no
+ * client-side conversation_history is assembled. Events are NAMED (the name is
+ * the SSE `event:` field, not inside the JSON); the run_id arrives in
+ * `run.started` and is what the existing /v1/runs/{id}/approval|stop endpoints
+ * key on. Garbled frames are dropped (PU4-1 posture). */
+export async function streamSessionChat(
   client: ApiClient,
   agent: string,
-  runId: string,
-  onEvent: (event: RunStreamEvent) => void,
+  sessionId: string,
+  message: string,
+  onEvent: (event: SessionStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await client.agentApiStream(
     agent,
-    `v1/runs/${encodeURIComponent(runId)}/events`,
-    signal,
+    `api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
+    { method: 'POST', json: { message }, signal },
   )
   const reader = response.body?.getReader()
   if (!reader) return
@@ -132,9 +126,7 @@ export async function streamRunEvents(
         continue
       }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
-      const record = payload as Record<string, unknown>
-      const kind = typeof record['event'] === 'string' ? record['event'] : ''
-      onEvent({ kind, payload: record })
+      onEvent({ kind: sse.event, payload: payload as Record<string, unknown> })
     }
   }
 }

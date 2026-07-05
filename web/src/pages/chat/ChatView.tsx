@@ -5,9 +5,12 @@
  * W7 single source of truth: entering, switching or finishing a turn always
  * re-hydrates the transcript from GET api/sessions/{id}/messages — local
  * streaming buffers are render-only and are discarded on re-hydration.
- * The turn uses the U3-verified /v1/runs composition; the run state machine
- * is the pure lib/chatMachine (PU4-2) and this component merely executes the
- * actions it returns. */
+ * The turn runs on POST api/sessions/{id}/chat/stream — one call whose SSE
+ * replays the session's native history server-side (tool results, tool_calls,
+ * reasoning, images), so no conversation_history is assembled client-side;
+ * approval/stop reuse /v1/runs/{run_id}/approval|stop keyed on the run_id from
+ * the stream's run.started. The run state machine is the pure lib/chatMachine
+ * (PU4-2) and this component merely executes the actions it returns. */
 
 import {
   ArrowDown,
@@ -43,9 +46,8 @@ import {
   listSessions,
   renameSession,
   sendApproval,
-  startRun,
   stopRun,
-  streamRunEvents,
+  streamSessionChat,
 } from '../../api/agentApi'
 import { ApiError } from '../../api/client'
 import { Collapsible } from '../../components/Collapsible'
@@ -63,6 +65,7 @@ import {
 import { INITIAL_WINDOW, growWindow, isPinned, windowStart } from '../../lib/chatScroll'
 import {
   addNote,
+  appendReasoning,
   appendText,
   completeTool,
   EMPTY_TURN,
@@ -83,7 +86,6 @@ import {
   type ResultView,
 } from '../../lib/toolFormat'
 import {
-  historyFromMessages,
   transcriptFromMessages,
   type TranscriptItem,
   type TranscriptToolCall,
@@ -125,6 +127,9 @@ export function ChatView(): ReactNode {
   // machine state needs synchronous access inside the stream loop
   const machineRef = useRef<ChatState>('idle')
   const runIdRef = useRef<string | null>(null)
+  // Stop clicked before run.started delivers the run_id: remember it and fire
+  // the stop the moment run_id arrives (the run_id is now async on the stream).
+  const pendingStopRef = useRef(false)
   const [machineUi, setMachineUi] = useState<ChatState>('idle')
 
   // FR-1/FR-2 (chat-ux): lazy render window over the transcript + bottom
@@ -335,14 +340,11 @@ export function ChatView(): ReactNode {
         setActiveId(sessionId)
         void refreshSessions()
       }
-      const raw = await fetchMessages(client, agent, sessionId) // W7 hydration for history
-      const runId = await startRun(client, agent, {
-        input: text,
-        session_id: sessionId,
-        conversation_history: historyFromMessages(raw),
-      })
-      runIdRef.current = runId
-      await consumeStream(runId)
+      // sessions/chat/stream replays the session's native history server-side
+      // (tool results, tool_calls, reasoning, images) — no client-side
+      // conversation_history assembly. The run_id arrives on the stream
+      // (run.started) and is what /v1/runs/{id}/approval|stop key on.
+      await consumeStream(sessionId, text)
     } catch (error) {
       pushNote(
         error instanceof ApiError
@@ -352,6 +354,7 @@ export function ChatView(): ReactNode {
     } finally {
       setMachine('idle')
       runIdRef.current = null
+      pendingStopRef.current = false
       setApproval(null)
       // turn is over: the server store has the authoritative record (W7) —
       // re-hydrate so tool results/failure details replace the live buffers.
@@ -371,67 +374,89 @@ export function ChatView(): ReactNode {
     setTurn((t) => addNote(t, note))
   }
 
-  async function consumeStream(runId: string): Promise<void> {
-    await streamRunEvents(client, agent, runId, (event) => {
+  async function consumeStream(sessionId: string, message: string): Promise<void> {
+    await streamSessionChat(client, agent, sessionId, message, (event) => {
       const payload = event.payload
       switch (event.kind) {
-        case 'message.delta': {
+        case 'run.started': {
+          // the run_id the /v1/runs/{id}/approval|stop endpoints key on —
+          // captured here (there is no separate startRun response now)
+          const runId = typeof payload['run_id'] === 'string' ? payload['run_id'] : ''
+          if (runId) {
+            runIdRef.current = runId
+            // a Stop pressed before run_id arrived was deferred — fire it now
+            if (pendingStopRef.current) {
+              pendingStopRef.current = false
+              stopRun(client, agent, runId).catch((error: unknown) => {
+                toast(
+                  'warn',
+                  error instanceof ApiError ? `stop failed: ${error.message}` : 'stop failed',
+                )
+              })
+            }
+          }
+          break
+        }
+        case 'assistant.delta': {
           const delta = typeof payload['delta'] === 'string' ? payload['delta'] : ''
           setTurn((t) => appendText(t, redact(delta, DELTA_LIMIT)))
           break
         }
-        case 'reasoning.available': {
-          // Despite the name, hermes fills this event with the assistant REPLY
-          // text (conversation_loop relay), NOT the model's chain-of-thought.
-          // The real reasoning is only persisted to the session store, so it
-          // surfaces after the turn via W7 re-hydration — it cannot stream
-          // live. Treat this purely as a reply fallback for providers that emit
-          // no message.delta; the dedupe guard avoids echoing a streamed reply.
-          const text = redact(String(payload['text'] ?? ''), DELTA_LIMIT)
-          setTurn((t) => fallbackText(t, text))
+        case 'tool.progress': {
+          // reasoning streams live as tool.progress{_thinking} (Q4=B); other
+          // tool_name progress is arg-streaming detail we don't render live
+          if (payload['tool_name'] === '_thinking') {
+            const delta = typeof payload['delta'] === 'string' ? payload['delta'] : ''
+            setTurn((t) => appendReasoning(t, redact(delta, DELTA_LIMIT)))
+          }
           break
         }
         case 'tool.started': {
           const preview = redact(String(payload['preview'] ?? '')).slice(0, 120)
-          const tool = String(payload['tool'] ?? '?')
+          const tool = String(payload['tool_name'] ?? '?')
           setTurn((t) => startTool(t, tool, preview))
           break
         }
-        case 'tool.completed': {
-          const tool = String(payload['tool'] ?? '?')
-          const failed = Boolean(payload['error'])
-          const duration = String(payload['duration'] ?? '?')
-          setTurn((t) => completeTool(t, tool, failed, duration))
+        case 'tool.completed':
+        case 'tool.failed': {
+          // sessions stream carries no live duration; the full args/result +
+          // timing arrive with end-of-turn W7 re-hydration
+          const tool = String(payload['tool_name'] ?? '?')
+          setTurn((t) => completeTool(t, tool, event.kind === 'tool.failed', ''))
           break
         }
         case 'approval.request': {
+          const runId =
+            typeof payload['run_id'] === 'string' ? payload['run_id'] : runIdRef.current
           const [next, action] = transition(machineRef.current, 'approval_request')
           setMachine(next)
-          if (action === 'prompt_approval') {
+          if (action === 'prompt_approval' && runId) {
             const summary = redact(
               String(
-                payload['preview'] ?? payload['command'] ?? payload['tool'] ?? 'tool execution',
+                payload['command'] ??
+                  payload['description'] ??
+                  payload['tool_name'] ??
+                  'tool execution',
               ),
             ).slice(0, 200)
             setApproval({ runId, summary })
-          } else if (action === 'auto_deny') {
-            void sendApproval(client, agent, runId, 'deny')
+          } else if (action === 'auto_deny' && runId) {
+            sendApprovalSafe(runId, 'deny')
           }
           break
         }
-        case 'run.completed': {
-          // reply fallback when no message.delta streamed — fallbackText no-ops
-          // once any reply text exists, so a streamed reply is never echoed
-          const output = String(payload['output'] ?? '')
-          setTurn((t) => fallbackText(t, redact(output, DELTA_LIMIT)))
+        case 'assistant.completed': {
+          // final content — reply fallback for turns with no assistant.delta;
+          // fallbackText no-ops once any reply text has streamed (never echoes)
+          const content = String(payload['content'] ?? '')
+          setTurn((t) => fallbackText(t, redact(content, DELTA_LIMIT)))
           break
         }
-        case 'run.failed':
-          pushNote(`run failed: ${redact(String(payload['error'] ?? 'unknown'))}`)
+        case 'error':
+          pushNote(`run failed: ${redact(String(payload['message'] ?? 'unknown'))}`)
           break
-        case 'run.cancelled':
-          pushNote('turn stopped')
-          break
+        // run.completed (usage/messages), message.started, done: lifecycle —
+        // end-of-turn W7 re-hydration is the transcript's source of truth
         default:
           break // unknown kinds ignored (forward compatibility)
       }
@@ -440,24 +465,38 @@ export function ChatView(): ReactNode {
     setMachine(next)
   }
 
+  /** Fire an approval decision, swallowing network failure with a toast (the
+   * machine transition already happened) — mirrors stopRun's .catch so these
+   * never surface as unhandled rejections. */
+  function sendApprovalSafe(runId: string, choice: string): void {
+    sendApproval(client, agent, runId, choice).catch((error: unknown) => {
+      toast('warn', error instanceof ApiError ? `approval failed: ${error.message}` : 'approval failed')
+    })
+  }
+
   function interrupt(): void {
     const runId = runIdRef.current
     const [next, action] = transition(machineRef.current, 'interrupt')
     setMachine(next)
-    if (action === 'send_stop' && runId) {
+    if (action === 'send_stop') {
       pushNote('stopping current turn — session preserved')
-      stopRun(client, agent, runId).catch((error: unknown) => {
-        toast('warn', error instanceof ApiError ? `stop failed: ${error.message}` : 'stop failed')
-      })
+      if (runId) {
+        stopRun(client, agent, runId).catch((error: unknown) => {
+          toast('warn', error instanceof ApiError ? `stop failed: ${error.message}` : 'stop failed')
+        })
+      } else {
+        // run.started hasn't delivered the run_id yet — stop as soon as it does
+        pendingStopRef.current = true
+      }
     } else if (action === 'auto_deny' && runId) {
       setApproval(null)
-      void sendApproval(client, agent, runId, 'deny')
+      sendApprovalSafe(runId, 'deny')
     }
   }
 
   function answerApproval(choice: ApprovalChoice): void {
     if (!approval) return
-    void sendApproval(client, agent, approval.runId, choice)
+    sendApprovalSafe(approval.runId, choice)
     setApproval(null)
     const [next] = transition(machineRef.current, 'approval_answered')
     setMachine(next)
@@ -997,6 +1036,7 @@ function LiveToolCard(props: { tool: LiveToolCall }): ReactNode {
   return (
     <div
       data-testid="chat-tool-call"
+      data-state={state}
       className={`overflow-hidden rounded-lg border ${state === 'failed' ? 'border-bad/50' : 'border-edge'} bg-panel-2`}
     >
       <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs">
@@ -1075,9 +1115,9 @@ function TranscriptBlock(props: { item: TranscriptItem }): ReactNode {
 
 function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode {
   const { turn, streaming } = props
-  // No thinking block live: hermes does not stream the model's chain-of-thought
-  // (only message.delta / tool.* / a reply relay). Reasoning is persisted and
-  // shown once the turn completes and the transcript re-hydrates (W7).
+  // Q4=B: the sessions stream carries reasoning live (tool.progress{_thinking}),
+  // so thinking renders inline in arrival order — same ∴ thinking card the
+  // re-hydrated transcript (W7) produces, so nothing jumps when the turn ends.
   if (turnIsEmpty(turn)) return null
   const lastIndex = turn.segments.length - 1
   return (
@@ -1091,20 +1131,34 @@ function LiveTurnBlock(props: { turn: LiveTurn; streaming: boolean }): ReactNode
           relative order the re-hydrated history path produces, so nothing jumps
           when the turn ends. Segments only ever append or update in place, so
           index keys are stable. */}
-      {turn.segments.map((seg, index) =>
-        seg.kind === 'tool' ? (
-          <LiveToolCard key={index} tool={seg.tool} />
-        ) : (
+      {turn.segments.map((seg, index) => {
+        if (seg.kind === 'tool') return <LiveToolCard key={index} tool={seg.tool} />
+        if (seg.kind === 'reasoning')
+          return (
+            <Collapsible
+              key={index}
+              summary={<span className="text-xs text-ink-dim">∴ thinking</span>}
+              defaultOpen={loadPrefs().thinkingOpen}
+              testId="chat-thinking-toggle"
+            >
+              {/* redact the COALESCED segment: a secret split across deltas has
+                  no contiguous run in any single delta, so per-delta redaction
+                  misses it — re-redact the assembled text (same as the
+                  re-hydrated transcript does) so it never reaches the DOM raw */}
+              <p className="text-xs whitespace-pre-wrap text-ink-dim">{redact(seg.text)}</p>
+            </Collapsible>
+          )
+        return (
           <div key={index} className="text-sm">
-            <Markdown text={seg.text} />
+            <Markdown text={redact(seg.text, DELTA_LIMIT)} />
             {/* cursor rides the trailing text only; a running tool below shows
                 its own spinner, so no stray cursor mid-conversation */}
             {streaming && index === lastIndex && (
               <span className="animate-pulse text-accent">▍</span>
             )}
           </div>
-        ),
-      )}
+        )
+      })}
       {turn.notes.map((note, index) => (
         <p
           key={`note-${index}`}

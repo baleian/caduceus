@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   addNote,
+  appendReasoning,
   appendText,
   completeTool,
   EMPTY_TURN,
@@ -19,6 +20,7 @@ import {
 
 type Ev =
   | { t: 'delta'; text: string }
+  | { t: 'reason'; text: string }
   | { t: 'start'; tool: string; preview: string }
   | { t: 'complete'; tool: string; error: boolean; duration: string }
   | { t: 'fallback'; text: string }
@@ -29,6 +31,8 @@ function apply(turn: LiveTurn, ev: Ev): LiveTurn {
   switch (ev.t) {
     case 'delta':
       return appendText(turn, ev.text)
+    case 'reason':
+      return appendReasoning(turn, ev.text)
     case 'start':
       return startTool(turn, ev.tool, ev.preview)
     case 'complete':
@@ -46,6 +50,7 @@ const toolName = fc.constantFrom('terminal', 'browser', 'write_file', 'A', 'B')
 
 const anyEvent: fc.Arbitrary<Ev> = fc.oneof(
   fc.record({ t: fc.constant('delta' as const), text: fc.string() }),
+  fc.record({ t: fc.constant('reason' as const), text: fc.string() }),
   fc.record({ t: fc.constant('start' as const), tool: toolName, preview: fc.string() }),
   fc.record({
     t: fc.constant('complete' as const),
@@ -114,6 +119,51 @@ describe('live-turn reducers — order & coalescing (the fix)', () => {
         expect(fold(noisy)).toEqual(fold(evs))
       }),
     )
+  })
+})
+
+describe('live-turn reducers — reasoning (Q4=B live thinking)', () => {
+  it('merges consecutive reasoning deltas into one reasoning segment', () => {
+    fc.assert(
+      fc.property(fc.array(fc.string({ minLength: 1 }), { minLength: 1 }), (parts) => {
+        const turn = fold(parts.map((text) => ({ t: 'reason', text })))
+        expect(turn.segments).toEqual([{ kind: 'reasoning', text: parts.join('') }])
+      }),
+    )
+  })
+
+  it('interleaves reasoning / text / tool in event-arrival order', () => {
+    const turn = fold([
+      { t: 'reason', text: 'think1 ' },
+      { t: 'reason', text: 'think2' },
+      { t: 'delta', text: 'answer ' },
+      { t: 'start', tool: 'terminal', preview: 'ls' },
+      { t: 'reason', text: 'more thinking' },
+    ])
+    expect(turn.segments.map((s) => s.kind)).toEqual(['reasoning', 'text', 'tool', 'reasoning'])
+    expect(turn.segments[0]).toEqual({ kind: 'reasoning', text: 'think1 think2' })
+  })
+
+  it('ignores empty reasoning deltas (no empty reasoning segments)', () => {
+    fc.assert(
+      fc.property(fc.array(anyEvent), (evs) => {
+        const noisy: Ev[] = []
+        for (const ev of evs) {
+          noisy.push({ t: 'reason', text: '' }, ev, { t: 'reason', text: '' })
+        }
+        expect(fold(noisy)).toEqual(fold(evs))
+      }),
+    )
+  })
+
+  it('reasoning is not reply text — fallback still fires after only reasoning', () => {
+    // reasoning must NOT satisfy turnHasText, or the final-content reply
+    // fallback would be suppressed on reasoning-only turns
+    const reasoned = fold([{ t: 'reason', text: 'thinking hard' }])
+    expect(turnHasText(reasoned)).toBe(false)
+    const withReply = fallbackText(reasoned, 'final reply')
+    expect(withReply.segments.map((s) => s.kind)).toEqual(['reasoning', 'text'])
+    expect(withReply.segments[1]).toEqual({ kind: 'text', text: 'final reply' })
   })
 })
 

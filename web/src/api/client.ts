@@ -268,11 +268,17 @@ export class ApiClient {
     })
   }
 
-  /** SSE / long streams through the relay — no timeout (U4-REL-3). */
-  agentApiStream(agent: string, subpath: string, signal?: AbortSignal): Promise<Response> {
-    return this.raw('GET', `/agents/${encodeURIComponent(agent)}/api/${subpath}`, {
+  /** SSE / long streams through the relay — no timeout (U4-REL-3). POST+body
+   * for the sessions chat stream; defaults to GET for plain event streams. */
+  agentApiStream(
+    agent: string,
+    subpath: string,
+    opts: { method?: string; json?: unknown; signal?: AbortSignal } = {},
+  ): Promise<Response> {
+    return this.raw(opts.method ?? 'GET', `/agents/${encodeURIComponent(agent)}/api/${subpath}`, {
       stream: true,
-      signal,
+      json: opts.json,
+      signal: opts.signal,
     })
   }
 }

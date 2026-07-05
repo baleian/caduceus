@@ -26,7 +26,10 @@ export interface LiveToolCall {
   duration: string
 }
 
-export type LiveSegment = { kind: 'text'; text: string } | { kind: 'tool'; tool: LiveToolCall }
+export type LiveSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'tool'; tool: LiveToolCall }
 
 export interface LiveTurn {
   userText: string
@@ -47,6 +50,23 @@ export function appendText(turn: LiveTurn, text: string): LiveTurn {
     segments[segments.length - 1] = { kind: 'text', text: last.text + text }
   } else {
     segments.push({ kind: 'text', text })
+  }
+  return { ...turn, segments }
+}
+
+/** tool.progress{_thinking} → append to the trailing reasoning segment
+ * (coalesce) or start a new one. Reasoning streams live now (Q4=B); it renders
+ * as its own segment in arrival order and, like text, an empty delta is a
+ * no-op. Kept distinct from text so `turnHasText`/`fallbackText` still gate on
+ * reply text only (reasoning is never a reply). */
+export function appendReasoning(turn: LiveTurn, text: string): LiveTurn {
+  if (!text) return turn
+  const segments = turn.segments.slice()
+  const last = segments[segments.length - 1]
+  if (last && last.kind === 'reasoning') {
+    segments[segments.length - 1] = { kind: 'reasoning', text: last.text + text }
+  } else {
+    segments.push({ kind: 'reasoning', text })
   }
   return { ...turn, segments }
 }
